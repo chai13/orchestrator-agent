@@ -130,6 +130,16 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
         try:
             CLIENT.images.pull(image_name)
             log_info(f"Image {image_name} pulled successfully")
+        except docker.errors.NotFound:
+            # Image doesn't exist in registry, check if available locally
+            try:
+                CLIENT.images.get(image_name)
+                log_warning(f"Image {image_name} not found in registry, using local image")
+            except docker.errors.ImageNotFound:
+                error_msg = f"Runtime version '{version_tag}' not found. The image {image_name} does not exist in the registry or locally."
+                log_error(error_msg)
+                set_error(container_name, error_msg, "create")
+                return None
         except Exception as e:
             log_warning(f"Failed to pull image, will try to use local image: {e}")
 
