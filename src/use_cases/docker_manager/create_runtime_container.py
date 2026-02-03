@@ -81,7 +81,7 @@ def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
     return True, ""
 
 
-def _create_runtime_container_sync(container_name: str, vnic_configs: list, serial_configs: list = None):
+def _create_runtime_container_sync(container_name: str, vnic_configs: list, serial_configs: list = None, runtime_version: str = None):
     """
     Synchronous implementation of runtime container creation.
     This function contains all blocking Docker operations and runs in a background thread.
@@ -102,6 +102,7 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
             - device_id: Stable USB device identifier from /dev/serial/by-id/
             - container_path: Path inside container (e.g., "/dev/modbus0")
             - baud_rate: Baud rate for documentation purposes (optional)
+        runtime_version: Version tag for the runtime image (optional, defaults to "latest")
     """
     if serial_configs is None:
         serial_configs = []
@@ -121,7 +122,8 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
         return None
 
     try:
-        image_name = "ghcr.io/autonomy-logic/openplc-runtime:latest"
+        version_tag = runtime_version if runtime_version else "latest"
+        image_name = f"ghcr.io/autonomy-logic/openplc-runtime:{version_tag}"
 
         set_step(container_name, "pulling_image")
         log_info(f"Pulling image {image_name}")
@@ -338,7 +340,7 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
         return None
 
 
-async def create_runtime_container(container_name: str, vnic_configs: list, serial_configs: list = None):
+async def create_runtime_container(container_name: str, vnic_configs: list, serial_configs: list = None, runtime_version: str = None):
     """
     Create a runtime container with MACVLAN networking for physical network bridging
     and an internal network for orchestrator communication.
@@ -350,9 +352,10 @@ async def create_runtime_container(container_name: str, vnic_configs: list, seri
         container_name: Name for the runtime container
         vnic_configs: List of virtual NIC configurations
         serial_configs: List of serial port configurations (optional)
+        runtime_version: Version tag for the runtime image (optional, defaults to "latest")
     """
     dhcp_vnics = await asyncio.to_thread(
-        _create_runtime_container_sync, container_name, vnic_configs, serial_configs
+        _create_runtime_container_sync, container_name, vnic_configs, serial_configs, runtime_version
     )
 
     if dhcp_vnics:
