@@ -7,7 +7,7 @@ and DNS error detection to handle network transitions gracefully.
 import socket
 import random
 from time import sleep
-from tools.logger import log_debug, log_warning
+from tools.logger import log_debug, log_warning, log_info
 
 # DNS health check configuration
 DNS_HEALTH_CHECK_TIMEOUT = 5.0  # DNS health check timeout in seconds
@@ -17,6 +17,22 @@ DNS_HEALTH_CHECK_RETRIES = 3  # Number of DNS health check retries
 RECONNECT_DELAY_BASE = 1.0  # Initial delay in seconds
 RECONNECT_DELAY_MAX = 30.0  # Maximum delay in seconds
 RECONNECT_JITTER = 0.3  # Jitter factor (30%)
+
+
+def parse_server_address(server_url: str) -> tuple[str, int]:
+    """
+    Parse server URL into host and port.
+
+    Args:
+        server_url: Server URL in host:port format
+
+    Returns:
+        Tuple of (host, port)
+    """
+    parts = server_url.split(":")
+    host = parts[0]
+    port = int(parts[1]) if len(parts) > 1 else 443
+    return host, port
 
 
 def wait_for_dns(host: str, port: int, max_retries: int = DNS_HEALTH_CHECK_RETRIES) -> bool:
@@ -100,3 +116,30 @@ def is_dns_error(error: Exception) -> bool:
         "dns",
     ]
     return any(indicator in error_str for indicator in dns_error_indicators)
+
+
+def perform_dns_health_check(server_url: str, reconnect_attempt: int) -> bool:
+    """
+    Perform DNS health check before reconnection attempt.
+
+    Args:
+        server_url: Server URL in host:port format
+        reconnect_attempt: Current reconnection attempt number
+
+    Returns:
+        True if DNS check passed or not needed, False if DNS failed
+    """
+    if reconnect_attempt == 0:
+        return True
+
+    host, port = parse_server_address(server_url)
+    log_info(f"Performing DNS health check for {host}...")
+
+    if wait_for_dns(host, port):
+        return True
+
+    log_warning(
+        f"DNS resolution failed after {DNS_HEALTH_CHECK_RETRIES} attempts. "
+        f"Network may still be transitioning."
+    )
+    return False

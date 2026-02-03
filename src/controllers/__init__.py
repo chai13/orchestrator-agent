@@ -4,9 +4,15 @@ from .websocket_controller import (
 )
 from tools.logger import *
 from tools.network_event_listener import network_event_listener
+from tools.dns_utils import (
+    perform_dns_health_check,
+    calculate_backoff,
+    is_dns_error,
+)
+from time import sleep
 
 
-async def main_websocket_task(server_url, dns_ttl: int = 30):
+async def main_websocket_task(server_url: str, dns_ttl: int = 30):
     """
     Main function to connect the WebSocket client to the server.
 
@@ -41,6 +47,55 @@ async def main_websocket_task(server_url, dns_ttl: int = 30):
                     log_debug("Closed HTTP session")
             except Exception as e:
                 log_debug(f"Error closing HTTP session: {e}")
+
+
+def run_websocket_with_reconnection(server_url: str, run_task):
+    """
+    Run WebSocket connection with automatic reconnection and DNS health checks.
+
+    Manages the reconnection loop with exponential backoff and DNS health checks
+    to handle network transitions gracefully.
+
+    Args:
+        server_url: The server URL to connect to (host:port format)
+        run_task: Function to run the async task (e.g., asyncio.run)
+    """
+    reconnect_attempt = 0
+
+    while True:
+        try:
+            # DNS health check before attempting connection
+            if not perform_dns_health_check(server_url, reconnect_attempt):
+                delay = calculate_backoff(reconnect_attempt)
+                log_warning(f"Waiting {delay:.1f}s before next attempt...")
+                sleep(delay)
+                reconnect_attempt += 1
+                continue
+
+            log_info(f"Attempting to connect to server at {server_url}...")
+            run_task(main_websocket_task(server_url))
+
+            # Connection closed normally, reset attempt counter
+            reconnect_attempt = 0
+
+        except KeyboardInterrupt:
+            log_warning("Keyboard interrupt received. Closing connection and exiting.")
+            break
+        except Exception as e:
+            log_error(f"Error on websocket interface: {e}")
+
+            # DNS errors get longer delays to allow network to stabilize
+            if is_dns_error(e):
+                delay = calculate_backoff(reconnect_attempt + 2)
+                log_warning(
+                    f"DNS-related error detected. Waiting {delay:.1f}s to allow network to stabilize..."
+                )
+            else:
+                delay = calculate_backoff(reconnect_attempt)
+                log_warning(f"Reconnecting in {delay:.1f}s (attempt {reconnect_attempt + 1})...")
+
+            sleep(delay)
+            reconnect_attempt += 1
 
 
 async def main_webrtc_task(*args, **kwargs):
