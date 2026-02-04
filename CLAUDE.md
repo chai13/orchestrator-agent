@@ -54,11 +54,25 @@ The agent runs alongside a network monitor sidecar (`autonomy-netmon`) that uses
 ### Key Components
 
 - **WebSocket Controller** (`src/controllers/websocket_controller/`): Socket.IO client setup, topic registration, and message routing
-- **WebRTC Controller** (`src/controllers/webrtc_controller/`): WebRTC signaling and remote terminal access for runtime containers
+- **WebRTC Controller** (`src/controllers/webrtc_controller/`): Manages WebRTC peer connections for remote terminal access to runtime containers
 - **Topic Receivers** (`src/controllers/websocket_controller/topics/receivers/`): Handlers for cloud commands (create_new_runtime, delete_device, run_command, etc.)
 - **Topic Emitters** (`src/controllers/websocket_controller/topics/emitters/`): Heartbeat emission every 5 seconds with system metrics
 - **Docker Manager** (`src/use_cases/docker_manager/`): Container and MACVLAN network lifecycle
 - **Network Event Listener** (`src/tools/network_event_listener.py`): Communicates with sidecar via Unix socket for network change events
+
+### WebRTC Remote Terminal
+
+The WebRTC controller enables real-time terminal access to runtime containers from the cloud UI:
+
+- **Signaling**: Uses existing Socket.IO connection for WebRTC offer/answer/ICE exchange
+- **Session Manager**: Tracks peer connections with automatic cleanup of stale sessions (5-minute timeout)
+- **Data Channels**: Terminal I/O and keepalive messages over WebRTC data channels
+- **NAT Traversal**: Configured with Google STUN servers for connectivity through NAT
+
+Key files:
+- `src/controllers/webrtc_controller/__init__.py` - Session manager and initialization
+- `src/controllers/webrtc_controller/signaling/` - Offer, ICE, and disconnect handlers
+- `src/controllers/webrtc_controller/data_channel/` - Terminal and keepalive channel handling
 
 ## Key Patterns
 
