@@ -5,12 +5,21 @@ Manages WebRTC peer connections for real-time communication with runtime contain
 Signaling is handled via the existing Socket.IO connection to the cloud.
 """
 
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from tools.logger import log_info, log_debug, log_error, log_warning
 from typing import Dict, Optional, Callable
 from enum import Enum
 from datetime import datetime, timedelta
 import asyncio
+
+
+# ICE servers for NAT traversal (same as browser-side configuration)
+ICE_SERVERS = RTCConfiguration(
+    iceServers=[
+        RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+        RTCIceServer(urls=["stun:stun1.l.google.com:19302"]),
+    ]
+)
 
 
 class SessionState(Enum):
@@ -102,7 +111,9 @@ class WebRTCSessionManager:
                 log_warning(f"Session {session_id} already exists, closing existing")
                 await self._close_session_unlocked(session_id, reason="replaced")
 
-            pc = RTCPeerConnection()
+            # Create peer connection with STUN servers for NAT traversal
+            pc = RTCPeerConnection(configuration=ICE_SERVERS)
+            log_debug(f"Created RTCPeerConnection with ICE servers: {[s.urls for s in ICE_SERVERS.iceServers]}")
             now = datetime.now()
 
             self._sessions[session_id] = {
