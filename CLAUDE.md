@@ -2,74 +2,109 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Overview
+## Project Overview
 
-The Orchestrator Agent is a Python daemon that runs on edge devices as a Docker container. It maintains a persistent mTLS-authenticated WebSocket connection to the Autonomy Edge Cloud and orchestrates OpenPLC v4 runtime containers (vPLCs) on host machines.
+Orchestrator Agent is a Python daemon that runs on edge devices as a Docker container. It maintains a persistent WebSocket connection (via Socket.IO) to the Autonomy Edge Cloud using mTLS authentication and orchestrates OpenPLC v4 runtime containers (vPLCs) on the host machine.
 
-## Commands
+## Development Commands
 
-**Run the agent locally:**
 ```bash
-python3 src/index.py
-```
-
-**Run with debug logging:**
-```bash
-python3 src/index.py --log-level DEBUG
-```
-
-**Install dependencies:**
-```bash
+# Install dependencies
 pip install -r requirements.txt
+
+# Run the agent
+python3 src/index.py
+
+# Run with debug logging
+python3 src/index.py --log-level DEBUG
+
+# Build Docker image
+docker build -t orchestrator-agent:latest .
 ```
 
-**Note:** There are no automated tests. Manual testing is required against the cloud service.
+**Note:** There is no automated test suite. Manual testing is required.
 
 ## Architecture
 
-### Two-Container Architecture
+The codebase follows a layered architecture:
+
+```
+src/
+├── index.py              # Entry point with reconnection loop
+├── controllers/          # Transport layer (WebSocket/WebRTC)
+├── use_cases/           # Business logic (Docker, networking, commands)
+└── tools/               # Infrastructure utilities
+```
+
+**Data flow:** `index.py` → `controllers/` (topic routing) → `use_cases/` (business logic) → `tools/` (utilities)
+
+### Two-Container Model
+
+The agent runs alongside a network monitor sidecar (`autonomy-netmon`) that uses netlink/pyroute2 to detect host network interface changes and notifies the agent via Unix socket.
+
 - **orchestrator-agent**: Main container managing Docker resources and cloud communication
 - **autonomy-netmon**: Sidecar container (runs with `--network=host`) monitoring physical network interfaces via netlink events
 
 ### Communication Paths
+
 - **Agent ↔ Cloud**: Socket.IO over HTTPS with mutual TLS (`api.getedge.me`)
 - **Agent ↔ Sidecar**: Unix domain socket at `/var/orchestrator/netmon.sock` (JSON lines, one-way sidecar → agent)
 - **Agent ↔ Runtime**: HTTP over internal bridge network (port 8443)
 
-### Layered Code Architecture
+### Key Components
 
-**controllers/** - Transport layer handling WebSocket topics and message routing
-- Topic handlers use `@topic(name)` decorator for registration
-- `@validate_message(contract, name)` decorator validates incoming messages against contracts before processing
-- Delegates business logic to use_cases
+- **WebSocket Controller** (`src/controllers/websocket_controller/`): Socket.IO client setup, topic registration, and message routing
+- **WebRTC Controller** (`src/controllers/webrtc_controller/`): WebRTC signaling and remote terminal access for runtime containers
+- **Topic Receivers** (`src/controllers/websocket_controller/topics/receivers/`): Handlers for cloud commands (create_new_runtime, delete_device, run_command, etc.)
+- **Topic Emitters** (`src/controllers/websocket_controller/topics/emitters/`): Heartbeat emission every 5 seconds with system metrics
+- **Docker Manager** (`src/use_cases/docker_manager/`): Container and MACVLAN network lifecycle
+- **Network Event Listener** (`src/tools/network_event_listener.py`): Communicates with sidecar via Unix socket for network change events
 
-**use_cases/** - Business logic layer
-- `docker_manager/` - Container and MACVLAN network management
-- `network_monitor/` - Network event listener and interface cache
-- `runtime_commands/` - Proxies commands to runtime containers
+## Key Patterns
 
-**tools/** - Infrastructure utilities
-- `contract_validation.py` - Type-safe message validation with BASE_MESSAGE and BASE_DEVICE contracts
-- `logger.py` - Logging with rotation
-- `ssl.py` - mTLS configuration and agent ID extraction
-- `vnic_persistence.py` - Persists vNIC configs to `/var/orchestrator/runtime_vnics.json`
-- `network_event_listener.py` - Listens for network change events from sidecar
+### Topic Handler Pattern
 
-### Key Patterns
+New topics follow this decorator pattern in `src/controllers/websocket_controller/topics/receivers/`:
 
-**Adding a new WebSocket topic handler:**
-1. Create file in `src/controllers/websocket_controller/topics/receivers/`
-2. Use `@topic("topic_name")` decorator
-3. Use `@validate_message(CONTRACT, "topic_name")` for validation
-4. Register in `src/controllers/websocket_controller/topics/__init__.py`
+```python
+from . import topic, validate_message
+from tools.contract_validation import StringType, BASE_MESSAGE
 
-**Contract validation types:**
+NAME = "topic_name"
+MESSAGE_TYPE = {**BASE_MESSAGE, "field": StringType}
+
+@topic(NAME)
+def init(client):
+    @client.on(NAME)
+    @validate_message(MESSAGE_TYPE, NAME, add_defaults=True)
+    async def callback(message):
+        # Handler logic
+        return {"action": NAME, "correlation_id": message.get("correlation_id"), ...}
+```
+
+### Contract Validation
+
+Type-safe schema validation in `src/tools/contract_validation.py`:
 - `StringType`, `NumberType`, `BooleanType`, `DateType`
-- `ListType(item_type)`, `OptionalType(inner_type)`
-- `BASE_MESSAGE` - correlation_id, action, requested_at (all optional)
-- `BASE_DEVICE` - extends BASE_MESSAGE with required device_id
+- `ListType(ItemType)` for arrays
+- `OptionalType(Type)` for optional fields
+- `validate_contract(schema, data)` or use `@validate_message` decorator
 
-**Network model:**
+### Operations State Tracking
+
+Prevents race conditions for container operations (`src/tools/operations_state.py`):
+```python
+from tools.operations_state import set_creating, is_operation_in_progress, clear_state
+
+if not set_creating(container_name):
+    # Race condition - another operation started
+    return error_response
+# ... do work ...
+clear_state(container_name)
+```
+
+### Network Model
+
 - MACVLAN networks: `macvlan_<interface>_<subnet>` - containers appear as physical devices on LAN
 - Internal bridge networks: `<container_name>_internal` - agent-to-runtime control plane
 - vNIC configs persisted for automatic reconnection after network changes
@@ -77,7 +112,17 @@ pip install -r requirements.txt
 ## Important Files
 
 - `src/index.py` - Entry point with reconnection loop
-- `src/controllers/__init__.py` - Main WebSocket task, starts network event listener
+- `src/controllers/__init__.py` - Main WebSocket task, starts network event listener and WebRTC controller
 - `src/use_cases/docker_manager/create_runtime_container.py` - Core container creation with MACVLAN/internal networks
 - `install/autonomy-netmon.py` - Network monitor sidecar daemon
 - `install/install.sh` - Production installation script
+- **mTLS certs:** `~/.mtls/client.crt`, `~/.mtls/client.key`
+- **Client state:** `/var/orchestrator/data/clients.json`
+- **vNIC configs:** `/var/orchestrator/data/vnics.json`
+- **Logs:** `/var/orchestrator/logs/`, `/var/orchestrator/debug/`
+
+## Git Workflow
+
+- Feature branches from `development` branch
+- PRs target `development`
+- CI builds multi-arch images (amd64, arm64, arm/v7) on main branch pushes
