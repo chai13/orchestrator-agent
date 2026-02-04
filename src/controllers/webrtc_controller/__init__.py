@@ -5,7 +5,7 @@ Manages WebRTC peer connections for real-time communication with runtime contain
 Signaling is handled via the existing Socket.IO connection to the cloud.
 """
 
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 from tools.logger import log_info, log_debug, log_error, log_warning
 from typing import Dict, Optional, Callable
 from enum import Enum
@@ -26,6 +26,13 @@ class SessionState(Enum):
 SESSION_TIMEOUT_SECONDS = 300  # 5 minutes
 # How often to check for stale sessions
 CLEANUP_INTERVAL_SECONDS = 60  # 1 minute
+
+# STUN servers for NAT traversal (same as openplc-web)
+ICE_SERVERS = RTCConfiguration([
+    RTCIceServer(urls=['stun:stun.l.google.com:19302']),
+    RTCIceServer(urls=['stun:stun1.l.google.com:19302']),
+    RTCIceServer(urls=['stun:stun.cloudflare.com:3478']),
+])
 
 
 class WebRTCSessionManager:
@@ -102,7 +109,7 @@ class WebRTCSessionManager:
                 log_warning(f"Session {session_id} already exists, closing existing")
                 await self._close_session_unlocked(session_id, reason="replaced")
 
-            pc = RTCPeerConnection()
+            pc = RTCPeerConnection(configuration=ICE_SERVERS)
             now = datetime.now()
 
             self._sessions[session_id] = {
