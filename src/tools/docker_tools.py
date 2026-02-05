@@ -379,7 +379,7 @@ def get_or_create_ipvlan_network(
         network = CLIENT.networks.create(
             name=network_name,
             driver="ipvlan",
-            driver_opts={
+            options={
                 "parent": parent_interface,
                 "ipvlan_mode": "l2",
             },
