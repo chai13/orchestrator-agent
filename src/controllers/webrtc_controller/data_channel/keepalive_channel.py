@@ -7,6 +7,7 @@ to execute HTTP commands on runtime containers.
 """
 
 from tools.logger import log_info, log_debug, log_error
+from ..types import SessionState
 import json
 import asyncio
 from typing import Optional
@@ -69,7 +70,6 @@ class KeepaliveChannel:
             self._send_message({"type": "ready"})
             # Update session state if manager available
             if self.session_manager:
-                from .. import SessionState
                 self.session_manager.update_session_state(self.session_id, SessionState.CONNECTED)
             # Start periodic ping task
             log_info(f"Starting ping loop")

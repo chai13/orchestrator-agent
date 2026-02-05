@@ -6,7 +6,7 @@ from .webrtc_controller import (
     init as init_webrtc_controller,
     start as start_webrtc_controller,
     stop as stop_webrtc_controller,
-    session_manager as webrtc_session_manager,
+    get_session_manager as get_webrtc_session_manager,
 )
 from tools.logger import *
 from tools.network_event_listener import network_event_listener
@@ -131,6 +131,6 @@ async def main_webrtc_task(*args, **kwargs):
     )
 
 
-def get_webrtc_session_manager():
+def get_session_manager():
     """Get the WebRTC session manager instance."""
-    return webrtc_session_manager
+    return get_webrtc_session_manager()

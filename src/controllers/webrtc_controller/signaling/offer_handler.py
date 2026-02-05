@@ -5,17 +5,16 @@ Handles incoming SDP offers from the browser client via the signaling server.
 Creates peer connections and generates SDP answers.
 """
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCSessionDescription
 from tools.logger import log_info, log_debug, log_error, log_warning
 from tools.contract_validation import (
     StringType,
-    NumberType,
-    OptionalType,
     BASE_MESSAGE,
     validate_contract_with_error_response,
 )
 from use_cases.docker_manager import CLIENTS
-from .. import SessionState
+from ..types import SessionState
+from ..data_channel import KeepaliveChannel
 
 
 NAME = "webrtc:offer"
@@ -140,8 +139,6 @@ def init(client, session_manager):
                 log_info(f"Channel state: {channel.readyState}")
                 session_manager.set_data_channel(session_id, channel)
 
-                # Import here to avoid circular imports
-                from ..data_channel import KeepaliveChannel
                 log_info(f"Creating KeepaliveChannel for session {session_id}")
                 keepalive = KeepaliveChannel(channel, session_id, session_manager)
                 session_manager.set_keepalive_channel(session_id, keepalive)
