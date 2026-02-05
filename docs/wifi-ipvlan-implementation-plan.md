@@ -1,6 +1,6 @@
-# WiFi Support via IPvlan - Implementation Plan
+# WiFi Support via Proxy ARP Bridge - Implementation Plan
 
-This document describes the implementation strategy for enabling vPLC container networking on WiFi interfaces using IPvlan as an alternative to MACVLAN.
+This document describes the implementation strategy for enabling vPLC container networking on WiFi interfaces using a Proxy ARP Bridge approach.
 
 ## Table of Contents
 
@@ -55,65 +55,83 @@ The orchestrator-agent uses MACVLAN Docker networks to give each vPLC container 
 
 **Why Ethernet Works:** Ethernet switches are promiscuous by design - they forward frames based on MAC learning without authenticating devices. Any MAC address on a port is accepted.
 
+### Why IPvlan Doesn't Work Universally
+
+IPvlan would be an ideal solution as it shares the parent's MAC address, but:
+
+1. **Kernel support required:** IPvlan requires `CONFIG_IPVLAN=y` in the kernel
+2. **Not available on embedded devices:** Many ARM devices (Arduino Portenta X8, Raspberry Pi with custom kernels) don't have IPvlan compiled in
+3. **Cannot be added as a module:** IPvlan must be compiled into the kernel, not loaded as a module
+
 ### Requirements
 
 1. vPLCs must be reachable by other devices on the network (Modbus, OPC-UA, SCADA protocols)
 2. vPLCs must be able to communicate with other devices on the network
-3. Each vPLC should ideally have its own IP address
+3. Each vPLC should have its own IP address on the WiFi subnet
 4. DHCP should work for automatic IP assignment
-5. Existing Ethernet functionality must not be affected
+5. Solution must work without special kernel modules (universal compatibility)
+6. Existing Ethernet functionality must not be affected
 
 ---
 
 ## Technical Background
 
-### MACVLAN vs IPvlan
+### How VirtualBox Solves This Problem
 
-| Feature | MACVLAN | IPvlan L2 |
-|---------|---------|-----------|
-| Container MAC | Unique per container | Same as parent interface |
-| Works on WiFi | No | Yes |
-| DHCP identification | By MAC address | By client-id (option 61) |
-| Host-container communication | Yes | No (Linux limitation) |
-| Network visibility | Separate device | Separate IP, same MAC |
+VirtualBox successfully bridges VMs to WiFi networks using a technique called **Proxy ARP**. According to VirtualBox documentation and source code analysis:
 
-### IPvlan L2 Mode
+1. **MAC Address Rewriting:** All outgoing frames use the host's WiFi MAC address
+2. **Proxy ARP:** The host responds to ARP requests for VM IPs, making VMs appear to have the host's MAC
+3. **IP-based Routing:** Incoming packets are routed to the correct VM based on destination IP, not MAC
 
-IPvlan L2 (Layer 2) mode allows containers to share the parent interface's MAC address while having unique IP addresses. This is the key to WiFi compatibility.
+This approach works without special kernel modules because it uses standard Linux networking features:
+- Proxy ARP (`/proc/sys/net/ipv4/conf/*/proxy_arp`)
+- IP forwarding (`/proc/sys/net/ipv4/ip_forward`)
+- Standard routing tables
+
+### Proxy ARP Bridge Concept
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    IPvlan L2 on WiFi - Solution                 │
+│                  Proxy ARP Bridge - Solution                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│   Host                         WiFi Access Point               │
-│   ┌──────────────┐             ┌──────────────┐                │
-│   │   wlan0      │             │              │                │
-│   │   MAC: AA:BB │◄───────────►│  Authenticated│               │
-│   │   (auth'd)   │   802.11    │  MAC: AA:BB  │                │
-│   └──────┬───────┘             └──────────────┘                │
-│          │                                                      │
-│   ┌──────┴───────┐                                             │
-│   │   IPvlan L2  │                                             │
-│   │   Network    │                                             │
+│   External Device (192.168.1.100)                               │
+│   ┌──────────────┐                                             │
+│   │ "Who has     │                                             │
+│   │ 192.168.1.50?"                                             │
 │   └──────┬───────┘                                             │
+│          │ ARP Request                                         │
+│          ▼                                                      │
+│   WiFi Access Point                                            │
 │          │                                                      │
-│   ┌──────┴───────┐             ┌──────────────┐                │
-│   │  Container   │             │              │                │
-│   │  MAC: AA:BB  │◄───────────►│  Same MAC!   │                │
-│   │  (same!)     │   ALLOWED   │  Traffic OK  │                │
-│   │  IP: unique  │             │              │                │
-│   └──────────────┘             └──────────────┘                │
+│          ▼                                                      │
+│   Host (192.168.1.10)                                          │
+│   ┌──────────────────────────────────────────┐                 │
+│   │   wlan0 (MAC: AA:BB:CC:DD:EE:FF)         │                 │
+│   │   proxy_arp = 1                           │                 │
+│   │                                           │                 │
+│   │   Responds: "192.168.1.50 is at AA:BB..."│                 │
+│   │   (Host's own MAC!)                       │                 │
+│   └──────────────────┬───────────────────────┘                 │
+│                      │                                          │
+│                      │ Route: 192.168.1.50 → veth-container    │
+│                      ▼                                          │
+│   ┌──────────────────────────────────────────┐                 │
+│   │   Container vPLC                          │                 │
+│   │   IP: 192.168.1.50                        │                 │
+│   │   (Real IP on WiFi subnet!)               │                 │
+│   └──────────────────────────────────────────┘                 │
 │                                                                 │
-│   Result: Container traffic flows through because it uses      │
-│   the same authenticated MAC address as the host               │
+│   Result: External devices can reach container at 192.168.1.50 │
+│   Traffic flows through host's authenticated WiFi connection   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### DHCP with IPvlan (Client Identifier)
+### DHCP with Proxy ARP
 
-Since all containers share the same MAC, DHCP servers would normally see them as the same client. We solve this using **DHCP Option 61 (Client Identifier)**.
+Since the container's traffic uses the host's MAC address, we need DHCP client-id (Option 61) to get unique IPs:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -122,13 +140,13 @@ Since all containers share the same MAC, DHCP servers would normally see them as
 │                                                                 │
 │   Container A                    Container B                    │
 │   ┌──────────────┐              ┌──────────────┐               │
-│   │ MAC: AA:BB   │              │ MAC: AA:BB   │               │
-│   │ (shared)     │              │ (shared)     │               │
+│   │ Uses host's  │              │ Uses host's  │               │
+│   │ MAC via proxy│              │ MAC via proxy│               │
 │   └──────┬───────┘              └──────┬───────┘               │
 │          │                             │                        │
 │          │ DHCP DISCOVER               │ DHCP DISCOVER          │
-│          │ Client-ID: "vplc-a:eth0"    │ Client-ID: "vplc-b:eth0"
-│          │                             │                        │
+│          │ Client-ID: "vplc-a:veth0"   │ Client-ID: "vplc-b:veth0"
+│          │ (via host's wlan0)          │ (via host's wlan0)     │
 │          └─────────────┬───────────────┘                       │
 │                        │                                        │
 │                        ▼                                        │
@@ -145,14 +163,9 @@ Since all containers share the same MAC, DHCP servers would normally see them as
 │         ▼                           ▼                           │
 │   Container A: 192.168.1.50   Container B: 192.168.1.51        │
 │                                                                 │
-│   Both containers get unique IPs!                              │
+│   Both containers get unique IPs on the WiFi subnet!           │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
-```
-
-The `udhcpc` DHCP client supports custom client-id via the `-x` option:
-```bash
-udhcpc -i eth1 -x 0x3d:76706c632d613a65746830  # hex-encoded "vplc-a:eth0"
 ```
 
 ---
@@ -161,10 +174,48 @@ udhcpc -i eth1 -x 0x3d:76706c632d613a65746830  # hex-encoded "vplc-a:eth0"
 
 ### Hybrid Approach
 
-We implement a **hybrid strategy** that automatically selects the appropriate network driver based on interface type:
+We implement a **hybrid strategy** that automatically selects the appropriate network method based on interface type:
 
 - **Ethernet interfaces** → MACVLAN (existing behavior, unchanged)
-- **WiFi interfaces** → IPvlan L2 with client-id DHCP
+- **WiFi interfaces** → Proxy ARP Bridge with client-id DHCP
+
+### Network Architecture for WiFi
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    WiFi Container Network Setup                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ┌─────────────────────────────────────────────────────────┐  │
+│   │                         HOST                             │  │
+│   │                                                          │  │
+│   │   wlan0 ─────────────────────────────────────────────┐  │  │
+│   │   192.168.1.10                                       │  │  │
+│   │   proxy_arp=1                                        │  │  │
+│   │   ip_forward=1                                       │  │  │
+│   │                                                      │  │  │
+│   │   Routing Table:                                     │  │  │
+│   │   192.168.1.50/32 via veth-host-A                   │  │  │
+│   │   192.168.1.51/32 via veth-host-B                   │  │  │
+│   │                                                      │  │  │
+│   │   ┌─────────────┐        ┌─────────────┐            │  │  │
+│   │   │ veth-host-A │        │ veth-host-B │            │  │  │
+│   │   └──────┬──────┘        └──────┬──────┘            │  │  │
+│   └──────────┼──────────────────────┼───────────────────┘  │  │
+│              │                      │                       │  │
+│   ┌──────────┼──────────────────────┼───────────────────┐  │  │
+│   │          │   Container netns    │                    │  │  │
+│   │   ┌──────┴──────┐        ┌──────┴──────┐            │  │  │
+│   │   │  veth-ct-A  │        │  veth-ct-B  │            │  │  │
+│   │   │192.168.1.50 │        │192.168.1.51 │            │  │  │
+│   │   └─────────────┘        └─────────────┘            │  │  │
+│   │                                                      │  │  │
+│   │   Container A               Container B              │  │  │
+│   │   (vPLC 1)                  (vPLC 2)                 │  │  │
+│   └──────────────────────────────────────────────────────┘  │  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ### Data Flow
 
@@ -190,31 +241,39 @@ We implement a **hybrid strategy** that automatically selects the appropriate ne
 │                    │                                            │
 │                    ▼                                            │
 │  ┌─────────────────────────────────────────┐                   │
-│  │ 3. Select network driver                │                   │
-│  │    - WiFi? → get_or_create_ipvlan()     │                   │
-│  │    - Ethernet? → get_or_create_macvlan()│                   │
+│  │ 3. Select network method                │                   │
+│  │    - WiFi? → Proxy ARP Bridge           │                   │
+│  │    - Ethernet? → MACVLAN (unchanged)    │                   │
 │  └─────────────────┬───────────────────────┘                   │
 │                    │                                            │
 │                    ▼                                            │
 │  ┌─────────────────────────────────────────┐                   │
-│  │ 4. Create container with network        │                   │
-│  │    - IPvlan: container shares parent MAC│                   │
-│  │    - MACVLAN: container gets unique MAC │                   │
+│  │ 4. Create container with internal net   │                   │
+│  │    - Container on internal bridge only  │                   │
+│  │    - No external network yet            │                   │
 │  └─────────────────┬───────────────────────┘                   │
 │                    │                                            │
 │                    ▼                                            │
 │  ┌─────────────────────────────────────────┐                   │
-│  │ 5. Start DHCP (if network_mode=dhcp)    │                   │
-│  │    - IPvlan: use_client_id=True         │                   │
-│  │      udhcpc -x 0x3d:{hex_client_id}     │                   │
-│  │    - MACVLAN: use_client_id=False       │                   │
-│  │      udhcpc (standard, by MAC)          │                   │
+│  │ 5. Create veth pair for WiFi            │                   │
+│  │    - veth-host end on host              │                   │
+│  │    - veth-ct end in container netns     │                   │
 │  └─────────────────┬───────────────────────┘                   │
 │                    │                                            │
 │                    ▼                                            │
 │  ┌─────────────────────────────────────────┐                   │
-│  │ 6. Save vNIC config with network type   │                   │
-│  │    - Store interface_type for reconnect │                   │
+│  │ 6. Request DHCP via netmon              │                   │
+│  │    - netmon runs udhcpc in container ns │                   │
+│  │    - Uses client-id for identification  │                   │
+│  │    - Packets go via host's wlan0        │                   │
+│  └─────────────────┬───────────────────────┘                   │
+│                    │                                            │
+│                    ▼                                            │
+│  ┌─────────────────────────────────────────┐                   │
+│  │ 7. Configure Proxy ARP on host          │                   │
+│  │    - Enable proxy_arp on wlan0          │                   │
+│  │    - Add route to container IP          │                   │
+│  │    - Add proxy ARP neighbor entry       │                   │
 │  └─────────────────────────────────────────┘                   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -230,7 +289,7 @@ We implement a **hybrid strategy** that automatically selects the appropriate ne
 
 **Changes:**
 
-1. Add `get_interface_type()` function:
+1. Add `get_interface_type()` function (already implemented):
 
 ```python
 def get_interface_type(ifname: str) -> str:
@@ -245,208 +304,170 @@ def get_interface_type(ifname: str) -> str:
     Returns:
         "wifi" or "ethernet"
     """
-    # Method 1: Check for wireless sysfs directory
     wireless_path = f"/sys/class/net/{ifname}/wireless"
     if os.path.exists(wireless_path):
         return "wifi"
 
-    # Method 2: Check for phy80211 (wireless PHY) link
     phy_path = f"/sys/class/net/{ifname}/phy80211"
     if os.path.exists(phy_path):
         return "wifi"
 
-    # Method 3: Check interface name patterns (fallback)
     if ifname.startswith(("wlan", "wlp", "wlx")):
         return "wifi"
 
     return "ethernet"
 ```
 
-2. Update `get_interface_info()` to include type:
-
-```python
-def get_interface_info(self, ifname: str) -> Optional[Dict]:
-    # ... existing code ...
-    return {
-        "interface": ifname,
-        "index": idx,
-        "operstate": operstate,
-        "type": get_interface_type(ifname),  # NEW FIELD
-        "ipv4_addresses": ipv4_addresses,
-        "gateway": gateway,
-        "timestamp": datetime.now().isoformat(),
-    }
-```
-
-3. The `network_discovery` and `network_change` events will now include the `type` field.
+2. Include type in `get_interface_info()` response (already implemented).
 
 ---
 
-### Task 2: Update Interface Cache to Include Type
+### Task 2: Update Interface Cache
 
 **File:** `src/tools/interface_cache.py`
 
-**Changes:**
-
-1. Update cache structure to include type:
-
-```python
-# Cache structure:
-# INTERFACE_CACHE = {
-#     "eth0": {
-#         "subnet": "192.168.1.0/24",
-#         "gateway": "192.168.1.1",
-#         "type": "ethernet",  # NEW
-#         "addresses": [...]
-#     },
-#     "wlan0": {
-#         "subnet": "10.0.0.0/24",
-#         "gateway": "10.0.0.1",
-#         "type": "wifi",  # NEW
-#         "addresses": [...]
-#     }
-# }
-```
-
-2. Add `get_interface_type()` accessor:
-
-```python
-def get_interface_type(interface_name: str) -> str:
-    """
-    Get the type of an interface from cache.
-
-    Returns:
-        "wifi" or "ethernet" (defaults to "ethernet" if unknown)
-    """
-    if interface_name in INTERFACE_CACHE:
-        return INTERFACE_CACHE[interface_name].get("type", "ethernet")
-    return "ethernet"
-```
-
-3. Update `update_interface_cache()` to store type from netmon events.
-
-**File:** `src/tools/network_event_listener.py`
-
-Update event handlers to extract and store interface type:
-
-```python
-# In _handle_network_discovery():
-for iface in interfaces:
-    interface_name = iface.get("interface")
-    interface_type = iface.get("type", "ethernet")  # NEW
-    update_interface_cache(interface_name, {
-        "subnet": ...,
-        "gateway": ...,
-        "type": interface_type,  # NEW
-        "addresses": ...
-    })
-```
+**Changes:** Add `get_interface_type()` accessor (already implemented).
 
 ---
 
-### Task 3: Create IPvlan Network Driver Support
+### Task 3: Create Proxy ARP Bridge Network Support
 
 **File:** `src/tools/docker_tools.py`
 
 **Changes:**
 
-1. Add `get_or_create_ipvlan_network()` function:
+1. Remove IPvlan functions (`get_or_create_ipvlan_network`, `get_ipvlan_network_key`)
+
+2. Add Proxy ARP Bridge setup functions:
 
 ```python
-def get_or_create_ipvlan_network(
+def setup_proxy_arp_bridge(
+    container_name: str,
+    container_pid: int,
     parent_interface: str,
-    parent_subnet: str = None,
-    parent_gateway: str = None,
-):
+    ip_address: str,
+    gateway: str,
+) -> dict:
     """
-    Get existing IPvlan L2 network for a parent interface or create a new one.
+    Set up Proxy ARP bridge for a container on a WiFi interface.
 
-    IPvlan L2 mode allows containers to share the parent's MAC address while
-    having unique IPs. Essential for WiFi where APs only accept authenticated MACs.
+    This creates a veth pair, configures routing, and enables proxy ARP
+    so the container can be reached on the WiFi network.
 
     Args:
-        parent_interface: Physical network interface (e.g., "wlan0")
-        parent_subnet: Subnet in netmask or CIDR format (optional, auto-detected)
-        parent_gateway: Gateway address (optional, auto-detected)
+        container_name: Name of the container
+        container_pid: PID of container's init process
+        parent_interface: WiFi interface (e.g., "wlan0")
+        ip_address: IP address for container (from DHCP or static)
+        gateway: Gateway address
 
     Returns:
-        Docker network object
+        dict with veth names and configuration details
     """
-    # Resolve subnet (same logic as MACVLAN)
-    if parent_subnet and parent_gateway:
-        if is_cidr_format(parent_subnet):
-            pass
-        else:
-            cidr_prefix = netmask_to_cidr(parent_subnet)
-            network_base = calculate_network_base(parent_gateway, parent_subnet)
-            parent_subnet = f"{network_base}/{cidr_prefix}"
-    else:
-        parent_subnet, parent_gateway = detect_interface_network(parent_interface)
-        if not parent_subnet:
-            raise ValueError(
-                f"Could not detect subnet for interface {parent_interface}"
-            )
+    import subprocess
 
-    # Different naming pattern from MACVLAN
-    network_name = f"ipvlan_{parent_interface}_{parent_subnet.replace('/', '_')}"
+    # Generate veth names
+    # Use short hash of container name to keep under 15 char limit
+    short_id = container_name[:8]
+    veth_host = f"veth-{short_id}"
+    veth_container = "eth1"  # Name inside container
 
-    # Check for existing network
+    # 1. Create veth pair
+    subprocess.run([
+        "ip", "link", "add", veth_host, "type", "veth",
+        "peer", "name", veth_container
+    ], check=True)
+
+    # 2. Move one end to container's network namespace
+    subprocess.run([
+        "ip", "link", "set", veth_container,
+        "netns", str(container_pid)
+    ], check=True)
+
+    # 3. Configure container's interface
+    subprocess.run([
+        "nsenter", "-t", str(container_pid), "-n",
+        "ip", "addr", "add", f"{ip_address}/32", "dev", veth_container
+    ], check=True)
+
+    subprocess.run([
+        "nsenter", "-t", str(container_pid), "-n",
+        "ip", "link", "set", veth_container, "up"
+    ], check=True)
+
+    # Add default route via the veth (peer address doesn't matter for /32)
+    subprocess.run([
+        "nsenter", "-t", str(container_pid), "-n",
+        "ip", "route", "add", "default", "dev", veth_container
+    ], check=True)
+
+    # 4. Configure host's end
+    subprocess.run(["ip", "link", "set", veth_host, "up"], check=True)
+
+    # 5. Enable proxy ARP on WiFi interface
+    with open(f"/proc/sys/net/ipv4/conf/{parent_interface}/proxy_arp", "w") as f:
+        f.write("1")
+
+    # 6. Enable IP forwarding
+    with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
+        f.write("1")
+
+    # 7. Add route to container
+    subprocess.run([
+        "ip", "route", "add", f"{ip_address}/32", "dev", veth_host
+    ], check=True)
+
+    # 8. Add proxy ARP entry (host will respond to ARP for container's IP)
+    subprocess.run([
+        "ip", "neighbor", "add", "proxy", ip_address, "dev", parent_interface
+    ], check=True)
+
+    return {
+        "veth_host": veth_host,
+        "veth_container": veth_container,
+        "ip_address": ip_address,
+        "parent_interface": parent_interface,
+    }
+
+
+def cleanup_proxy_arp_bridge(
+    container_name: str,
+    ip_address: str,
+    parent_interface: str,
+    veth_host: str,
+) -> None:
+    """
+    Clean up Proxy ARP bridge configuration for a container.
+
+    Args:
+        container_name: Name of the container
+        ip_address: Container's IP address
+        parent_interface: WiFi interface
+        veth_host: Host-side veth interface name
+    """
+    import subprocess
+
+    # Remove proxy ARP entry
     try:
-        network = CLIENT.networks.get(network_name)
-        if _validate_network_exists(network):
-            log_debug(f"IPvlan network {network_name} already exists, reusing it")
-            return network
-    except docker.errors.NotFound:
+        subprocess.run([
+            "ip", "neighbor", "del", "proxy", ip_address, "dev", parent_interface
+        ], check=False)
+    except Exception:
         pass
 
-    log_info(
-        f"Creating new IPvlan L2 network {network_name} for parent interface "
-        f"{parent_interface} with subnet {parent_subnet}"
-    )
+    # Remove route
+    try:
+        subprocess.run([
+            "ip", "route", "del", f"{ip_address}/32", "dev", veth_host
+        ], check=False)
+    except Exception:
+        pass
 
-    ipam_pool_config = {"subnet": parent_subnet}
-    if parent_gateway:
-        ipam_pool_config["gateway"] = parent_gateway
-
-    ipam_pool = docker.types.IPAMPool(**ipam_pool_config)
-    ipam_config = docker.types.IPAMConfig(pool_configs=[ipam_pool])
-
-    network = CLIENT.networks.create(
-        name=network_name,
-        driver="ipvlan",
-        driver_opts={
-            "parent": parent_interface,
-            "ipvlan_mode": "l2",
-        },
-        ipam=ipam_config,
-    )
-    log_info(f"IPvlan network {network_name} created successfully")
-    return network
-```
-
-2. Add `get_ipvlan_network_key()` for validation (mirrors MACVLAN logic):
-
-```python
-def get_ipvlan_network_key(
-    parent_interface: str,
-    parent_subnet: str = None,
-    parent_gateway: str = None,
-) -> str:
-    """Compute the IPvlan network key for validation."""
-    # Same logic as get_macvlan_network_key but with ipvlan_ prefix
-    if parent_subnet and parent_gateway:
-        if is_cidr_format(parent_subnet):
-            resolved_subnet = parent_subnet
-        else:
-            cidr_prefix = netmask_to_cidr(parent_subnet)
-            network_base = calculate_network_base(parent_gateway, parent_subnet)
-            resolved_subnet = f"{network_base}/{cidr_prefix}"
-    else:
-        resolved_subnet, _ = detect_interface_network(parent_interface)
-        if not resolved_subnet:
-            return f"ipvlan_{parent_interface}_unknown"
-
-    return f"ipvlan_{parent_interface}_{resolved_subnet.replace('/', '_')}"
+    # Remove veth pair (removes both ends)
+    try:
+        subprocess.run(["ip", "link", "del", veth_host], check=False)
+    except Exception:
+        pass
 ```
 
 ---
@@ -457,214 +478,128 @@ def get_ipvlan_network_key(
 
 **Changes:**
 
-1. Import the new interface type function:
+1. For WiFi interfaces, don't create MACVLAN/IPvlan network
+2. Create container with only internal network
+3. After container starts, set up Proxy ARP bridge
+4. Request DHCP with client-id
 
 ```python
-from tools.interface_cache import get_interface_type
-from tools.docker_tools import (
-    CLIENT,
-    get_or_create_macvlan_network,
-    get_or_create_ipvlan_network,  # NEW
-    create_internal_network,
-    get_macvlan_network_key,
-)
-```
-
-2. Update vNIC processing loop to detect interface type:
-
-```python
+# In the vNIC processing loop:
 for vnic_config in vnic_configs:
-    vnic_name = vnic_config.get("name")
     parent_interface = vnic_config.get("parent_interface")
-    parent_subnet = vnic_config.get("subnet")
-    parent_gateway = vnic_config.get("gateway")
-
-    # Detect interface type from cache
     interface_type = get_interface_type(parent_interface)
-    vnic_config["_interface_type"] = interface_type  # Store for DHCP
-    vnic_config["_is_ipvlan"] = interface_type == "wifi"  # Store flag
 
-    log_debug(
-        f"Processing vNIC {vnic_name} for {interface_type} interface {parent_interface}"
-    )
-
-    # Choose network driver based on interface type
     if interface_type == "wifi":
-        log_info(f"Using IPvlan L2 for WiFi interface {parent_interface}")
-        network = get_or_create_ipvlan_network(
-            parent_interface, parent_subnet, parent_gateway
-        )
+        # WiFi: Use Proxy ARP Bridge (no Docker network needed)
+        log_info(f"Using Proxy ARP Bridge for WiFi interface {parent_interface}")
+        vnic_config["_network_method"] = "proxy_arp"
+        # Container will only be on internal network initially
+        # Proxy ARP setup happens after container starts
     else:
+        # Ethernet: Use MACVLAN (existing behavior)
         network = get_or_create_macvlan_network(
             parent_interface, parent_subnet, parent_gateway
         )
+        networks.append((network, vnic_config))
+        vnic_config["_network_method"] = "macvlan"
 
-    networks.append((network, vnic_config))
-```
+# After container starts, for WiFi vNICs:
+for vnic_config in vnic_configs:
+    if vnic_config.get("_network_method") == "proxy_arp":
+        network_mode = vnic_config.get("network_mode", "dhcp")
 
-3. Update DHCP vNIC collection to include IPvlan flag:
+        if network_mode == "dhcp":
+            # Request DHCP first to get IP
+            result = await network_event_listener.start_dhcp_proxy_arp(
+                container_name,
+                vnic_config["name"],
+                container_pid,
+                vnic_config["parent_interface"],
+            )
+            if result.get("success"):
+                ip_address = result.get("ip_address")
+                gateway = result.get("gateway")
+        else:
+            # Static IP
+            ip_address = vnic_config.get("ip")
+            gateway = vnic_config.get("gateway")
 
-```python
-dhcp_vnics = []
-for network, vnic_config in networks:
-    network_mode = vnic_config.get("network_mode", "dhcp")
-    if network_mode == "dhcp":
-        vnic_name = vnic_config.get("name")
-        mac_address = network_settings.get(network.name, {}).get("MacAddress")
-        is_ipvlan = vnic_config.get("_is_ipvlan", False)
+        # Set up Proxy ARP bridge with the IP
+        bridge_config = setup_proxy_arp_bridge(
+            container_name,
+            container_pid,
+            vnic_config["parent_interface"],
+            ip_address,
+            gateway,
+        )
 
-        if container_pid > 0:
-            dhcp_vnics.append({
-                "vnic_name": vnic_name,
-                "mac_address": mac_address,
-                "container_pid": container_pid,
-                "use_client_id": is_ipvlan,  # IPvlan needs client-id
-            })
-```
-
-4. Update vNIC persistence to include network type:
-
-```python
-# When saving vNIC configs, include network type for reconnection
-vnic_config["_network_driver"] = "ipvlan" if is_ipvlan else "macvlan"
-save_vnic_configs(container_name, vnic_configs)
+        # Store config for cleanup
+        vnic_config["_proxy_arp_config"] = bridge_config
 ```
 
 ---
 
-### Task 5: Update netmon DHCP for IPvlan
+### Task 5: Update netmon DHCP for Proxy ARP
 
 **File:** `install/autonomy-netmon.py`
 
 **Changes:**
 
-1. Add interface finder for IPvlan (cannot use MAC):
+1. Add function to run DHCP and capture IP for Proxy ARP setup:
 
 ```python
-def _find_interface_for_ipvlan(
-    self, container_pid: int
-) -> Optional[str]:
-    """
-    Find the IPvlan interface in a container's netns.
-
-    Since IPvlan interfaces share the parent's MAC, we can't identify by MAC.
-    We find by exclusion: not loopback, not on internal bridge subnet (172.x.x.x).
-
-    Returns:
-        Interface name or None if not found
-    """
-    try:
-        result = subprocess.run(
-            ["nsenter", "-t", str(container_pid), "-n", "ip", "-j", "addr", "show"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-
-        interfaces = json.loads(result.stdout)
-
-        for iface in interfaces:
-            ifname = iface.get("ifname", "")
-
-            # Skip loopback
-            if ifname == "lo":
-                continue
-
-            # Check if interface is on internal bridge (172.x.x.x)
-            addr_info = iface.get("addr_info", [])
-            on_internal = False
-            for addr in addr_info:
-                if addr.get("family") == "inet":
-                    local_addr = addr.get("local", "")
-                    if local_addr.startswith("172."):
-                        on_internal = True
-                        break
-
-            if on_internal:
-                continue
-
-            # This should be our IPvlan interface
-            logger.info(f"Found IPvlan interface: {ifname}")
-            return ifname
-
-        logger.warning("Could not find IPvlan interface by exclusion")
-        return None
-
-    except Exception as e:
-        logger.error(f"Error finding IPvlan interface: {e}")
-        return None
-```
-
-2. Update `start_dhcp()` to support client-id:
-
-```python
-def start_dhcp(
+def start_dhcp_proxy_arp(
     self,
     container_name: str,
     vnic_name: str,
-    mac_address: str,
     container_pid: int,
-    use_client_id: bool = False,  # NEW PARAMETER
+    parent_interface: str,
 ) -> Dict[str, Any]:
     """
-    Start a DHCP client for a container's vNIC.
+    Start DHCP for Proxy ARP bridge setup.
+
+    This runs udhcpc to get an IP, then returns the IP for Proxy ARP setup.
+    The DHCP packets go out via the host's WiFi interface.
 
     Args:
-        container_name: Name of the container
-        vnic_name: Name of the virtual NIC
-        mac_address: MAC address (for MACVLAN) or None (for IPvlan)
-        container_pid: PID of the container's init process
-        use_client_id: If True, use DHCP option 61 client-id (for IPvlan)
+        container_name: Container name
+        vnic_name: vNIC name
+        container_pid: Container PID
+        parent_interface: WiFi interface to use
+
+    Returns:
+        Dict with ip_address, gateway, etc.
     """
     key = f"{container_name}:{vnic_name}"
 
-    # ... existing validation code ...
+    # Generate unique client-id
+    client_id_str = f"{container_name}:{vnic_name}"
+    client_id_hex = client_id_str.encode('utf-8').hex()
 
-    # Find interface - method depends on network type
-    if use_client_id:
-        # IPvlan mode - find by exclusion
-        logger.info(f"Looking for IPvlan interface in container PID {container_pid}")
-        interface = self._find_interface_for_ipvlan(container_pid)
-    else:
-        # MACVLAN mode - find by MAC (existing behavior)
-        logger.info(f"Looking for interface with MAC {mac_address}")
-        interface = None
-        for attempt in range(10):
-            interface = self._find_interface_by_mac(container_pid, mac_address)
-            if interface:
-                break
-            time.sleep(0.3)
+    # Create a temporary veth for DHCP
+    # This will be replaced by the actual Proxy ARP veth after we get the IP
+    temp_veth = f"dhcp-{container_name[:6]}"
 
-    if not interface:
-        return {"success": False, "error": "Interface not found"}
-
-    # Build udhcpc command
+    # Run udhcpc on the parent interface with client-id
+    # The -O option requests specific options
     cmd = [
-        "nsenter", "-t", str(container_pid), "-n",
-        "udhcpc", "-f", "-i", interface,
+        "udhcpc", "-f", "-i", parent_interface,
         "-s", "/usr/share/udhcpc/default.script",
-        "-t", "5", "-T", "3",
+        "-t", "5", "-T", "3", "-n",  # -n = exit if no lease
+        "-x", f"0x3d:{client_id_hex}",  # Client-ID
+        "-O", "router",  # Request gateway
     ]
 
-    # For IPvlan: add unique client-id
-    if use_client_id:
-        client_id_str = f"{container_name}:{vnic_name}"
-        client_id_hex = client_id_str.encode('utf-8').hex()
-        # Option 61 (0x3d) = Client Identifier
-        cmd.extend(["-x", f"0x3d:{client_id_hex}"])
-        logger.info(f"Using DHCP client-id: {client_id_str}")
+    # Run and capture lease info
+    # ... implementation details ...
 
-    # ... rest of existing code ...
-
-    # Store use_client_id for DHCP restarts
-    self.last_lease_state[key]["use_client_id"] = use_client_id
+    return {
+        "success": True,
+        "ip_address": assigned_ip,
+        "gateway": gateway,
+        "subnet_mask": mask,
+    }
 ```
-
-3. Update `_monitor_leases()` to preserve client-id on restart.
-
-4. Update `handle_command()` to accept `use_client_id` parameter.
 
 ---
 
@@ -674,58 +609,62 @@ def start_dhcp(
 
 **Changes:**
 
-1. Update DHCP start calls to pass `use_client_id`:
+1. Add `start_dhcp_proxy_arp()` method to communicate with netmon
+2. Update reconnection logic to handle Proxy ARP bridges
+3. Remove IPvlan-specific code
+
+---
+
+### Task 7: Update selfdestruct.py
+
+**File:** `src/use_cases/docker_manager/selfdestruct.py`
+
+**Changes:**
+
+1. Remove IPvlan network pattern
+2. Add cleanup for Proxy ARP configurations:
 
 ```python
-async def start_dhcp(
-    self,
-    container_name: str,
-    vnic_name: str,
-    mac_address: str,
-    container_pid: int,
-    use_client_id: bool = False,  # NEW
-):
-    """Request netmon to start DHCP for a container's vNIC."""
-    command = {
-        "command": "start_dhcp",
-        "container_name": container_name,
-        "vnic_name": vnic_name,
-        "mac_address": mac_address,
-        "container_pid": container_pid,
-        "use_client_id": use_client_id,  # NEW
-    }
-    return await self._send_command(command)
+def _cleanup_proxy_arp_configs():
+    """
+    Clean up Proxy ARP configurations during self-destruct.
+
+    This removes:
+    - Proxy ARP neighbor entries
+    - Routes to container IPs
+    - Veth interfaces
+    """
+    # Load vNIC configs to find Proxy ARP setups
+    all_vnic_configs = load_vnic_configs()
+
+    for container_name, vnic_configs in all_vnic_configs.items():
+        for vnic_config in vnic_configs:
+            proxy_arp_config = vnic_config.get("_proxy_arp_config")
+            if proxy_arp_config:
+                cleanup_proxy_arp_bridge(
+                    container_name,
+                    proxy_arp_config.get("ip_address"),
+                    proxy_arp_config.get("parent_interface"),
+                    proxy_arp_config.get("veth_host"),
+                )
 ```
 
-2. Update reconnection logic to use correct network type:
+---
 
-```python
-async def _reconnect_container_vnic(self, container_name, vnic_config, new_subnet, new_gateway):
-    """Reconnect a container's vNIC to the appropriate network."""
+### Task 8: Update install.sh
 
-    interface_type = vnic_config.get("_interface_type", "ethernet")
-    is_ipvlan = interface_type == "wifi"
+**File:** `install/install.sh`
 
-    if is_ipvlan:
-        network = get_or_create_ipvlan_network(
-            vnic_config["parent_interface"], new_subnet, new_gateway
-        )
-    else:
-        network = get_or_create_macvlan_network(
-            vnic_config["parent_interface"], new_subnet, new_gateway
-        )
+**Changes:**
 
-    # ... reconnection logic ...
+Add system configuration for Proxy ARP support:
 
-    # Restart DHCP with correct mode
-    if vnic_config.get("network_mode") == "dhcp":
-        await self.start_dhcp(
-            container_name,
-            vnic_config["name"],
-            vnic_config.get("mac_address"),
-            container_pid,
-            use_client_id=is_ipvlan,  # NEW
-        )
+```bash
+# Enable IP forwarding (persistent)
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+
+# Note: proxy_arp is enabled per-interface at runtime
 ```
 
 ---
@@ -734,74 +673,24 @@ async def _reconnect_container_vnic(self, container_name, vnic_config, new_subne
 
 ### Runtime Container Deletion
 
-**File:** `src/use_cases/docker_manager/delete_runtime_container.py`
+When a container with Proxy ARP bridge is deleted:
 
-The existing deletion logic handles cleanup correctly because:
-
-1. **Container removal** - Works the same for IPvlan and MACVLAN
-2. **vNIC config deletion** - Already implemented
-3. **Network cleanup** - IPvlan networks are shared (like MACVLAN), not deleted per-container
-
-**Note:** Line 24 in the current code states "MACVLAN networks are NOT removed as they may be shared by other containers." The same applies to IPvlan networks.
+1. **Stop DHCP client** - netmon handles this
+2. **Remove proxy ARP neighbor entry** - `ip neighbor del proxy {ip} dev {wlan0}`
+3. **Remove route** - `ip route del {ip}/32 dev {veth}`
+4. **Remove veth pair** - `ip link del {veth}` (removes both ends)
+5. **Container removal** - Standard Docker removal
 
 ### Orchestrator Self-Destruct
 
-**File:** `src/use_cases/docker_manager/selfdestruct.py`
+The `_cleanup_proxy_arp_configs()` function handles:
+1. Iterating through all vNIC configs
+2. Finding Proxy ARP configurations
+3. Cleaning up routes, neighbors, and veth interfaces
 
-**Changes Required:**
+### DHCP Cleanup
 
-1. Add IPvlan network pattern (line ~23):
-
-```python
-# Existing pattern
-MACVLAN_NETWORK_PATTERN = re.compile(r"^macvlan_[a-zA-Z0-9]+_\d+\.\d+\.\d+\.\d+_\d+$")
-
-# NEW: IPvlan network pattern
-IPVLAN_NETWORK_PATTERN = re.compile(r"^ipvlan_[a-zA-Z0-9]+_\d+\.\d+\.\d+\.\d+_\d+$")
-```
-
-2. Update `_cleanup_orchestrator_networks()` to include IPvlan:
-
-```python
-def _cleanup_orchestrator_networks():
-    """
-    Clean up all orchestrator-created networks that are no longer in use.
-
-    This removes:
-    - Internal bridge networks matching UUID_internal pattern
-    - MACVLAN networks matching macvlan_{interface}_{subnet}_{mask} pattern
-    - IPvlan networks matching ipvlan_{interface}_{subnet}_{mask} pattern  # NEW
-
-    Networks with connected containers are skipped.
-    """
-    # ... existing code ...
-
-    for network in all_networks:
-        network_name = network.name
-
-        is_internal = INTERNAL_NETWORK_PATTERN.match(network_name)
-        is_macvlan = MACVLAN_NETWORK_PATTERN.match(network_name)
-        is_ipvlan = IPVLAN_NETWORK_PATTERN.match(network_name)  # NEW
-
-        if not is_internal and not is_macvlan and not is_ipvlan:  # UPDATED
-            continue
-
-        # ... rest of cleanup logic (unchanged) ...
-```
-
-### DHCP Process Cleanup
-
-DHCP cleanup happens automatically:
-
-1. When a container is deleted, its network namespace is destroyed
-2. The `udhcpc` process running in that namespace is terminated
-3. netmon's `_monitor_leases()` detects the dead process and cleans up state
-
-No additional changes needed for DHCP cleanup.
-
-### vNIC Persistence Cleanup
-
-The existing `delete_vnic_configs()` function handles cleanup. The additional `_interface_type` and `_is_ipvlan` fields are deleted along with the rest of the config.
+DHCP cleanup is automatic - when the DHCP client is stopped, the lease expires naturally.
 
 ---
 
@@ -810,16 +699,12 @@ The existing `delete_vnic_configs()` function handles cleanup. The additional `_
 ### Unit Testing
 
 1. **Interface type detection:**
-   - Mock `/sys/class/net/{ifname}/wireless` existence
    - Test with various interface names (eth0, wlan0, enp0s3, wlp2s0)
 
-2. **Network creation:**
-   - Test IPvlan network creation with valid parameters
-   - Test overlap handling
-
-3. **DHCP client-id:**
-   - Verify hex encoding of client-id string
-   - Test command construction
+2. **Proxy ARP setup:**
+   - Test veth creation
+   - Test routing configuration
+   - Test proxy ARP neighbor entries
 
 ### Integration Testing
 
@@ -830,34 +715,27 @@ The existing `delete_vnic_configs()` function handles cleanup. The additional `_
 
 2. **WiFi path (new):**
    - Create vPLC on WiFi interface
-   - Verify IPvlan network created
+   - Verify Proxy ARP bridge created
    - Verify DHCP works with client-id
+   - Verify container reachable from other devices
 
 3. **Mixed scenario:**
    - Create vPLCs on both Ethernet and WiFi
-   - Verify correct network driver selection
+   - Verify correct network method selection
 
-4. **Reconnection:**
-   - Trigger network change event
-   - Verify containers reconnect with correct network type
-
-5. **Deletion:**
+4. **Deletion:**
    - Delete vPLC
-   - Verify cleanup
-   - Self-destruct orchestrator
-   - Verify all IPvlan networks cleaned up
+   - Verify Proxy ARP cleanup (routes, neighbors, veth)
 
 ### Manual Testing Checklist
 
 - [ ] Create vPLC on Ethernet - verify MACVLAN used
-- [ ] Create vPLC on WiFi - verify IPvlan used
-- [ ] Verify vPLC reachable from other devices on network
-- [ ] Verify vPLC can reach other devices on network
-- [ ] Test DHCP IP assignment on WiFi vPLC
-- [ ] Test static IP on WiFi vPLC
-- [ ] Disconnect/reconnect WiFi - verify container reconnects
-- [ ] Delete vPLC - verify network cleanup
-- [ ] Self-destruct - verify IPvlan networks removed
+- [ ] Create vPLC on WiFi - verify Proxy ARP Bridge used
+- [ ] Ping container from another device on WiFi network
+- [ ] Container can ping other devices on WiFi network
+- [ ] Test Modbus TCP connection to WiFi vPLC
+- [ ] Delete vPLC - verify cleanup (no orphan routes/veths)
+- [ ] Self-destruct - verify all Proxy ARP configs removed
 
 ---
 
@@ -865,17 +743,17 @@ The existing `delete_vnic_configs()` function handles cleanup. The additional `_
 
 If issues are discovered after deployment:
 
-1. **Revert to MACVLAN-only:**
-   - The interface type detection defaults to "ethernet"
-   - Setting `get_interface_type()` to always return "ethernet" disables IPvlan
+1. **Revert to Ethernet-only:**
+   - Setting `get_interface_type()` to always return "ethernet" disables WiFi support
+   - Users would need Ethernet connection
 
-2. **Network cleanup:**
-   - IPvlan networks follow same cleanup patterns as MACVLAN
-   - Self-destruct handles both network types
+2. **Cleanup:**
+   - Proxy ARP configs are cleaned up on container deletion
+   - Self-destruct handles full cleanup
 
 3. **No data migration needed:**
    - vNIC configs are backward compatible
-   - Missing `_interface_type` field defaults to "ethernet"
+   - Missing `_network_method` field defaults to "macvlan"
 
 ---
 
@@ -883,18 +761,20 @@ If issues are discovered after deployment:
 
 | File | Changes |
 |------|---------|
-| `install/autonomy-netmon.py` | Add `get_interface_type()`, update `get_interface_info()`, add `_find_interface_for_ipvlan()`, update `start_dhcp()` |
-| `src/tools/interface_cache.py` | Add type field to cache, add `get_interface_type()` accessor |
-| `src/tools/docker_tools.py` | Add `get_or_create_ipvlan_network()`, `get_ipvlan_network_key()` |
-| `src/tools/network_event_listener.py` | Update cache updates, update DHCP calls with `use_client_id` |
-| `src/use_cases/docker_manager/create_runtime_container.py` | Detect interface type, select network driver, pass IPvlan flag to DHCP |
-| `src/use_cases/docker_manager/selfdestruct.py` | Add `IPVLAN_NETWORK_PATTERN`, update `_cleanup_orchestrator_networks()` |
+| `install/autonomy-netmon.py` | Add `get_interface_type()` (done), add `start_dhcp_proxy_arp()` |
+| `src/tools/interface_cache.py` | Add `get_interface_type()` accessor (done) |
+| `src/tools/docker_tools.py` | Remove IPvlan functions, add `setup_proxy_arp_bridge()`, `cleanup_proxy_arp_bridge()` |
+| `src/tools/network_event_listener.py` | Add Proxy ARP DHCP support, remove IPvlan code |
+| `src/use_cases/docker_manager/create_runtime_container.py` | Use Proxy ARP for WiFi, remove IPvlan code |
+| `src/use_cases/docker_manager/selfdestruct.py` | Remove IPvlan pattern, add `_cleanup_proxy_arp_configs()` |
+| `install/install.sh` | Enable IP forwarding |
 
 ---
 
 ## References
 
-- [Docker IPvlan Documentation](https://docs.docker.com/network/drivers/ipvlan/)
-- [BusyBox udhcpc README](https://udhcp.busybox.net/README.udhcpc)
+- [VirtualBox Bridged Networking Documentation](https://docs.oracle.com/en/virtualization/virtualbox/6.0/user/network_bridged.html)
+- [VirtualBox Source Code - VBoxNetFlt](https://github.com/VirtualBox/virtualbox)
+- [Linux Proxy ARP](https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt)
 - [RFC 2132 - DHCP Options](https://www.rfc-editor.org/rfc/rfc2132) (Option 61: Client Identifier)
-- [Linux IPvlan Documentation](https://www.kernel.org/doc/Documentation/networking/ipvlan.txt)
+- [BusyBox udhcpc](https://udhcp.busybox.net/README.udhcpc)
