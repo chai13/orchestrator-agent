@@ -1,9 +1,9 @@
 from . import CLIENTS, remove_client, get_self_container
 from tools.operations_state import set_step, set_error, clear_state
 from tools.logger import *
-from tools.vnic_persistence import delete_vnic_configs
+from tools.vnic_persistence import delete_vnic_configs, load_vnic_configs
 from tools.serial_persistence import delete_serial_configs
-from tools.docker_tools import CLIENT
+from tools.docker_tools import CLIENT, cleanup_proxy_arp_bridge
 from tools.devices_usage_buffer import get_devices_usage_buffer
 import docker
 import asyncio
@@ -33,6 +33,29 @@ def _delete_runtime_container_sync(container_name: str):
         log_warning(f"Container {container_name} not found in client registry")
 
     try:
+        # Clean up Proxy ARP bridges before deleting container (WiFi vNICs)
+        # This must be done before container removal to ensure routes are properly cleaned
+        set_step(container_name, "cleaning_proxy_arp")
+        try:
+            all_vnic_configs = load_vnic_configs()
+            vnic_configs = all_vnic_configs.get(container_name, [])
+            for vnic_config in vnic_configs:
+                proxy_arp_config = vnic_config.get("_proxy_arp_config")
+                if proxy_arp_config:
+                    ip_address = proxy_arp_config.get("ip_address")
+                    parent_interface = proxy_arp_config.get("parent_interface")
+                    veth_host = proxy_arp_config.get("veth_host")
+                    if ip_address and parent_interface and veth_host:
+                        log_info(f"Cleaning up Proxy ARP bridge for vNIC {vnic_config.get('name')}")
+                        try:
+                            cleanup_proxy_arp_bridge(
+                                container_name, ip_address, parent_interface, veth_host
+                            )
+                        except Exception as e:
+                            log_warning(f"Error cleaning up Proxy ARP bridge: {e}")
+        except Exception as e:
+            log_warning(f"Error loading vNIC configs for Proxy ARP cleanup: {e}")
+
         set_step(container_name, "stopping_container")
         try:
             container = CLIENT.containers.get(container_name)

@@ -15,7 +15,7 @@ from tools.serial_persistence import (
     delete_serial_configs,
 )
 from tools.interface_cache import INTERFACE_CACHE, get_interface_type
-from tools.docker_tools import CLIENT, get_or_create_macvlan_network, get_or_create_ipvlan_network
+from tools.docker_tools import CLIENT, get_or_create_macvlan_network
 from tools.utils import matches_device_id
 
 SOCKET_PATH = "/var/orchestrator/netmon.sock"
@@ -341,9 +341,9 @@ class NetworkEventListener:
         Args:
             container_name: Name of the container
             vnic_name: Name of the virtual NIC
-            mac_address: MAC address (used for MACVLAN, can be None for IPvlan)
+            mac_address: MAC address for MACVLAN interface
             container_pid: PID of the container's init process
-            use_client_id: If True, use DHCP client-id for identification (for IPvlan/WiFi)
+            use_client_id: If True, use DHCP client-id for identification (for Proxy ARP/WiFi)
         """
         command = {
             "command": "start_dhcp",
@@ -363,6 +363,56 @@ class NetworkEventListener:
             "vnic_name": vnic_name,
         }
         return await self.send_command(command)
+
+    async def request_wifi_dhcp(
+        self,
+        container_name: str,
+        vnic_name: str,
+        parent_interface: str,
+        container_pid: int,
+    ) -> dict:
+        """
+        Request DHCP for a WiFi vNIC using Proxy ARP method.
+
+        Unlike MACVLAN DHCP (which runs inside the container's network namespace),
+        Proxy ARP DHCP runs on the host's WiFi interface with a unique client-id
+        (DHCP option 61) to differentiate multiple containers sharing the same
+        WiFi interface.
+
+        This method sends a command to netmon which:
+        1. Generates a unique client-id based on container_name:vnic_name
+        2. Runs udhcpc on the host's WiFi interface with that client-id
+        3. Returns the obtained IP, gateway, and subnet mask
+
+        Args:
+            container_name: Name of the container
+            vnic_name: Name of the virtual NIC
+            parent_interface: WiFi interface (e.g., "wlan0")
+            container_pid: PID of the container (for Proxy ARP setup)
+
+        Returns:
+            Dict with success, ip_address, gateway, subnet_mask on success
+            Dict with success=False and error on failure
+        """
+        # Generate unique client-id for DHCP option 61
+        client_id = f"{container_name}:{vnic_name}"
+
+        command = {
+            "command": "request_wifi_dhcp",
+            "container_name": container_name,
+            "vnic_name": vnic_name,
+            "parent_interface": parent_interface,
+            "container_pid": container_pid,
+            "client_id": client_id,
+        }
+
+        log_info(f"Requesting WiFi DHCP for {client_id} on {parent_interface}")
+        result = await self.send_command(command)
+
+        # The actual DHCP result will come as a dhcp_update event
+        # For now, return the command send status
+        # The caller should wait for the dhcp_update callback or poll dhcp_ip_cache
+        return result
 
     def get_dhcp_ip(self, container_name: str, vnic_name: str) -> Optional[str]:
         """Get the DHCP-assigned IP for a container's vNIC"""
@@ -415,133 +465,149 @@ class NetworkEventListener:
                         # Get fresh container info from Docker
                         container = CLIENT.containers.get(container_name)
                         container.reload()
-                        
+
                         # Skip if container is not running
                         if container.status != "running":
                             log_debug(f"Container {container_name} is not running, skipping DHCP resync")
                             continue
-                        
+
                         # Get fresh PID from Docker
                         container_pid = container.attrs.get("State", {}).get("Pid", 0)
                         if container_pid <= 0:
                             log_warning(f"Container {container_name} has invalid PID, skipping DHCP resync")
                             continue
-                        
-                        # Get actual MAC address from Docker for the macvlan/ipvlan network
+
+                        # Check if this is a Proxy ARP vNIC (WiFi)
+                        proxy_arp_config = vnic_config.get("_proxy_arp_config")
+                        if proxy_arp_config or vnic_config.get("_network_method") == "proxy_arp":
+                            # WiFi vNIC using Proxy ARP - request DHCP through host interface
+                            log_info(f"Resyncing Proxy ARP DHCP for WiFi vNIC {container_name}:{vnic_name}")
+                            key = f"{container_name}:{vnic_name}"
+                            result = await self.request_wifi_dhcp(
+                                container_name, vnic_name, parent_interface, container_pid
+                            )
+                            if result.get("success"):
+                                log_info(f"Proxy ARP DHCP resync initiated for {key}")
+                                self.pending_dhcp_resyncs.pop(key, None)
+                            else:
+                                log_warning(f"Proxy ARP DHCP resync failed for {key}: {result.get('error')}")
+                                if vnic_config.get("dhcp_ip"):
+                                    vnic_config.pop("dhcp_ip", None)
+                                    vnic_config.pop("dhcp_gateway", None)
+                                # Add to pending for retry
+                                self.pending_dhcp_resyncs[key] = {
+                                    "container_name": container_name,
+                                    "vnic_name": vnic_name,
+                                    "parent_interface": parent_interface,
+                                    "is_proxy_arp": True,
+                                    "next_retry_at": time.time() + DHCP_RETRY_BACKOFF_BASE,
+                                    "retry_count": 0,
+                                }
+                            continue
+
+                        # Get actual MAC address from Docker for the MACVLAN network
                         network_settings = container.attrs.get("NetworkSettings", {}).get("Networks", {})
                         actual_mac = None
                         docker_network_name = None
-                        is_ipvlan = False
 
                         for net_name, net_info in network_settings.items():
                             if net_name.startswith(f"macvlan_{parent_interface}"):
                                 actual_mac = net_info.get("MacAddress")
                                 docker_network_name = net_name
                                 break
-                            elif net_name.startswith(f"ipvlan_{parent_interface}"):
-                                # IPvlan doesn't have unique MAC, use parent's MAC or None
-                                actual_mac = net_info.get("MacAddress") or "ipvlan"
-                                docker_network_name = net_name
-                                is_ipvlan = True
-                                break
-                        
+
                         if not actual_mac:
-                            log_warning(f"Could not find network for {container_name}:{vnic_name}, skipping DHCP resync")
+                            log_warning(f"Could not find MACVLAN network for {container_name}:{vnic_name}, skipping DHCP resync")
                             continue
 
-                        # For IPvlan, skip MAC enforcement and use client-id for DHCP
-                        if is_ipvlan:
-                            log_info(f"IPvlan interface detected for {container_name}:{vnic_name}, using client-id for DHCP")
-                            mac_address = actual_mac if actual_mac != "ipvlan" else None
-                        else:
-                            # MACVLAN: Get persisted MAC address (authoritative for stability)
-                            persisted_mac = vnic_config.get("mac_address")
+                        # MACVLAN: Get persisted MAC address (authoritative for stability)
+                        persisted_mac = vnic_config.get("mac_address")
 
-                            # Check for MAC mismatch and enforce persisted MAC if needed
-                            if persisted_mac and persisted_mac.lower() != actual_mac.lower():
-                                log_warning(
-                                    f"MAC mismatch for {container_name}:{vnic_name}: "
-                                    f"persisted={persisted_mac}, actual={actual_mac}. "
-                                    f"Enforcing persisted MAC by reconnecting..."
-                                )
-                                # Disconnect and reconnect with persisted MAC to enforce stability
-                                try:
-                                    network = CLIENT.networks.get(docker_network_name)
-                                    network.disconnect(container, force=True)
+                        # Check for MAC mismatch and enforce persisted MAC if needed
+                        if persisted_mac and persisted_mac.lower() != actual_mac.lower():
+                            log_warning(
+                                f"MAC mismatch for {container_name}:{vnic_name}: "
+                                f"persisted={persisted_mac}, actual={actual_mac}. "
+                                f"Enforcing persisted MAC by reconnecting..."
+                            )
+                            # Disconnect and reconnect with persisted MAC to enforce stability
+                            try:
+                                network = CLIENT.networks.get(docker_network_name)
+                                network.disconnect(container, force=True)
 
-                                    connect_kwargs = {"mac_address": persisted_mac}
-                                    network_mode = vnic_config.get("network_mode", "dhcp")
-                                    if network_mode == "static":
-                                        ip_address = vnic_config.get("ip")
-                                        if ip_address:
-                                            connect_kwargs["ipv4_address"] = ip_address.split("/")[0]
+                                connect_kwargs = {"mac_address": persisted_mac}
+                                network_mode = vnic_config.get("network_mode", "dhcp")
+                                if network_mode == "static":
+                                    ip_address = vnic_config.get("ip")
+                                    if ip_address:
+                                        connect_kwargs["ipv4_address"] = ip_address.split("/")[0]
 
-                                    network.connect(container, **connect_kwargs)
-                                    log_info(f"Reconnected {container_name}:{vnic_name} with persisted MAC {persisted_mac}")
+                                network.connect(container, **connect_kwargs)
+                                log_info(f"Reconnected {container_name}:{vnic_name} with persisted MAC {persisted_mac}")
 
-                                    # Wait for Docker to report the endpoint with correct MAC
-                                    # This is necessary because network.connect() returns before
-                                    # the interface is fully created in the container's netns
-                                    max_wait_seconds = 5
-                                    poll_interval = 0.2
-                                    waited = 0
-                                    mac_verified = False
+                                # Wait for Docker to report the endpoint with correct MAC
+                                # This is necessary because network.connect() returns before
+                                # the interface is fully created in the container's netns
+                                max_wait_seconds = 5
+                                poll_interval = 0.2
+                                waited = 0
+                                mac_verified = False
 
-                                    while waited < max_wait_seconds:
-                                        await asyncio.sleep(poll_interval)
-                                        waited += poll_interval
-                                        container.reload()
+                                while waited < max_wait_seconds:
+                                    await asyncio.sleep(poll_interval)
+                                    waited += poll_interval
+                                    container.reload()
 
-                                        net_info = container.attrs.get("NetworkSettings", {}).get("Networks", {}).get(docker_network_name, {})
-                                        reported_mac = net_info.get("MacAddress", "")
+                                    net_info = container.attrs.get("NetworkSettings", {}).get("Networks", {}).get(docker_network_name, {})
+                                    reported_mac = net_info.get("MacAddress", "")
 
-                                        if reported_mac and reported_mac.lower() == persisted_mac.lower():
-                                            log_info(f"MAC enforcement verified for {container_name}:{vnic_name} after {waited:.1f}s")
-                                            mac_verified = True
-                                            break
+                                    if reported_mac and reported_mac.lower() == persisted_mac.lower():
+                                        log_info(f"MAC enforcement verified for {container_name}:{vnic_name} after {waited:.1f}s")
+                                        mac_verified = True
+                                        break
 
-                                        log_debug(f"Waiting for MAC enforcement... reported={reported_mac}, expected={persisted_mac}")
+                                    log_debug(f"Waiting for MAC enforcement... reported={reported_mac}, expected={persisted_mac}")
 
-                                    if not mac_verified:
-                                        log_warning(f"MAC enforcement may not have taken effect for {container_name}:{vnic_name} after {max_wait_seconds}s")
-                                        # Fall back to actual MAC since enforcement failed
-                                        # This ensures DHCP can still work even if MAC stability is lost
-                                        container.reload()
-                                        net_info = container.attrs.get("NetworkSettings", {}).get("Networks", {}).get(docker_network_name, {})
-                                        fallback_mac = net_info.get("MacAddress", "")
-                                        if fallback_mac:
-                                            log_warning(f"Using actual MAC {fallback_mac} instead of persisted {persisted_mac} for {container_name}:{vnic_name}")
-                                            mac_address = fallback_mac
-                                            # Update persisted MAC to match reality so future resyncs don't fail
-                                            vnic_config["mac_address"] = fallback_mac
-                                        else:
-                                            mac_address = persisted_mac
+                                if not mac_verified:
+                                    log_warning(f"MAC enforcement may not have taken effect for {container_name}:{vnic_name} after {max_wait_seconds}s")
+                                    # Fall back to actual MAC since enforcement failed
+                                    # This ensures DHCP can still work even if MAC stability is lost
+                                    container.reload()
+                                    net_info = container.attrs.get("NetworkSettings", {}).get("Networks", {}).get(docker_network_name, {})
+                                    fallback_mac = net_info.get("MacAddress", "")
+                                    if fallback_mac:
+                                        log_warning(f"Using actual MAC {fallback_mac} instead of persisted {persisted_mac} for {container_name}:{vnic_name}")
+                                        mac_address = fallback_mac
+                                        # Update persisted MAC to match reality so future resyncs don't fail
+                                        vnic_config["mac_address"] = fallback_mac
                                     else:
                                         mac_address = persisted_mac
+                                else:
+                                    mac_address = persisted_mac
 
-                                    # Refresh container info after waiting
-                                    container.reload()
-                                    container_pid = container.attrs.get("State", {}).get("Pid", 0)
-                                except Exception as e:
-                                    log_error(f"Failed to enforce MAC for {container_name}:{vnic_name}: {e}")
-                                    # Fall back to actual MAC if enforcement fails
-                                    mac_address = actual_mac
-                            else:
+                                # Refresh container info after waiting
+                                container.reload()
+                                container_pid = container.attrs.get("State", {}).get("Pid", 0)
+                            except Exception as e:
+                                log_error(f"Failed to enforce MAC for {container_name}:{vnic_name}: {e}")
+                                # Fall back to actual MAC if enforcement fails
                                 mac_address = actual_mac
-                                # Only fill MAC if missing, never overwrite existing
-                                if not persisted_mac:
-                                    vnic_config["mac_address"] = actual_mac
-                                    log_info(f"Stored MAC address {actual_mac} for {container_name}:{vnic_name}")
-                        
+                        else:
+                            mac_address = actual_mac
+                            # Only fill MAC if missing, never overwrite existing
+                            if not persisted_mac:
+                                vnic_config["mac_address"] = actual_mac
+                                log_info(f"Stored MAC address {actual_mac} for {container_name}:{vnic_name}")
+
                         # Update docker_network_name if missing
                         if docker_network_name and not vnic_config.get("docker_network_name"):
                             vnic_config["docker_network_name"] = docker_network_name
-                        
-                        log_info(f"Starting DHCP for {container_name}:{vnic_name} (MAC: {mac_address}, PID: {container_pid}, use_client_id: {is_ipvlan})")
+
+                        log_info(f"Starting DHCP for {container_name}:{vnic_name} (MAC: {mac_address}, PID: {container_pid})")
 
                         # Request DHCP from netmon
                         key = f"{container_name}:{vnic_name}"
-                        result = await self.start_dhcp(container_name, vnic_name, mac_address, container_pid, use_client_id=is_ipvlan)
+                        result = await self.start_dhcp(container_name, vnic_name, mac_address, container_pid)
                         if result.get("success"):
                             log_info(f"DHCP resync initiated for {key}")
                             # Remove from pending if it was there
@@ -558,7 +624,6 @@ class NetworkEventListener:
                                 "container_name": container_name,
                                 "vnic_name": vnic_name,
                                 "parent_interface": parent_interface,
-                                "is_ipvlan": is_ipvlan,
                                 "next_retry_at": time.time() + DHCP_RETRY_BACKOFF_BASE,
                                 "retry_count": 0,
                             }
@@ -655,39 +720,44 @@ class NetworkEventListener:
                         log_warning(f"Container {container_name} has invalid PID, will retry later")
                         self._schedule_next_retry(next_key, state)
                         continue
-                    
-                    # Get fresh MAC from Docker (for MACVLAN) or detect IPvlan
+
+                    # Check if this is a Proxy ARP retry (WiFi)
+                    is_proxy_arp = state.get("is_proxy_arp", False)
+                    if is_proxy_arp:
+                        # WiFi vNIC using Proxy ARP
+                        result = await self.request_wifi_dhcp(
+                            container_name, vnic_name, parent_interface, container_pid
+                        )
+                        if result.get("success"):
+                            log_info(f"Proxy ARP DHCP retry succeeded for {next_key} after {retry_count + 1} attempts")
+                            self.pending_dhcp_resyncs.pop(next_key, None)
+                        else:
+                            log_warning(f"Proxy ARP DHCP retry failed for {next_key}: {result.get('error')}")
+                            self._schedule_next_retry(next_key, state)
+                        continue
+
+                    # Get fresh MAC from Docker for MACVLAN network
                     network_settings = container.attrs.get("NetworkSettings", {}).get("Networks", {})
                     actual_mac = None
                     docker_network_name = None
-                    is_ipvlan = state.get("is_ipvlan", False)
 
                     for net_name, net_info in network_settings.items():
                         if net_name.startswith(f"macvlan_{parent_interface}"):
                             actual_mac = net_info.get("MacAddress")
                             docker_network_name = net_name
                             break
-                        elif net_name.startswith(f"ipvlan_{parent_interface}"):
-                            # IPvlan doesn't have unique MAC
-                            actual_mac = net_info.get("MacAddress") or "ipvlan"
-                            docker_network_name = net_name
-                            is_ipvlan = True
-                            break
 
                     if not actual_mac:
-                        log_warning(f"Could not find network for {next_key}, will retry later")
+                        log_warning(f"Could not find MACVLAN network for {next_key}, will retry later")
                         self._schedule_next_retry(next_key, state)
                         continue
 
-                    # For IPvlan, use client-id; for MACVLAN, use persisted MAC if available
-                    if is_ipvlan:
-                        mac_address = actual_mac if actual_mac != "ipvlan" else None
-                    else:
-                        persisted_mac = vnic_config.get("mac_address")
-                        mac_address = persisted_mac if persisted_mac else actual_mac
+                    # MACVLAN: use persisted MAC if available, otherwise actual
+                    persisted_mac = vnic_config.get("mac_address")
+                    mac_address = persisted_mac if persisted_mac else actual_mac
 
                     # Request DHCP from netmon
-                    result = await self.start_dhcp(container_name, vnic_name, mac_address, container_pid, use_client_id=is_ipvlan)
+                    result = await self.start_dhcp(container_name, vnic_name, mac_address, container_pid)
                     
                     if result.get("success"):
                         log_info(f"DHCP retry succeeded for {next_key} after {retry_count + 1} attempts")
@@ -733,7 +803,13 @@ class NetworkEventListener:
         log_debug(f"Scheduled next DHCP retry for {key} in {delay:.1f}s (attempt {retry_count + 1})")
 
     async def _reconnect_containers(self, interface: str, iface_data: dict):
-        """Reconnect runtime containers to new MACVLAN/IPvlan network after interface change"""
+        """
+        Reconnect runtime containers after interface network change.
+
+        For Ethernet (MACVLAN): Reconnect container to new MACVLAN network
+        For WiFi (Proxy ARP): Update Proxy ARP bridge configuration with new IP/gateway
+        """
+        from tools.docker_tools import setup_proxy_arp_bridge, cleanup_proxy_arp_bridge
 
         try:
             all_vnic_configs = load_vnic_configs()
@@ -756,7 +832,7 @@ class NetworkEventListener:
 
             # Determine interface type (wifi vs ethernet)
             interface_type = get_interface_type(interface)
-            is_ipvlan = interface_type == "wifi"
+            is_wifi = interface_type == "wifi"
 
             log_info(
                 f"Processing network change for interface {interface} (type: {interface_type}), "
@@ -768,96 +844,28 @@ class NetworkEventListener:
                     parent_interface = vnic_config.get("parent_interface")
 
                     if parent_interface == interface:
+                        vnic_name = vnic_config.get("name")
                         log_info(
                             f"Checking container {container_name} vNIC "
-                            f"{vnic_config.get('name')} for network reconnection"
+                            f"{vnic_name} for network reconnection"
                         )
 
                         try:
                             container = CLIENT.containers.get(container_name)
                             container.reload()
 
-                            container_networks = container.attrs.get(
-                                "NetworkSettings", {}
-                            ).get("Networks", {})
-
-                            # Check for both macvlan and ipvlan networks
-                            already_on_correct_subnet = False
-                            network_prefix = f"ipvlan_{interface}" if is_ipvlan else f"macvlan_{interface}"
-                            for net_name in list(container_networks.keys()):
-                                if net_name.startswith(f"macvlan_{interface}") or net_name.startswith(f"ipvlan_{interface}"):
-                                    current_subnet = self._get_network_subnet(net_name)
-                                    if not current_subnet:
-                                        continue
-
-                                    if current_subnet == new_subnet:
-                                        log_info(
-                                            f"Container {container_name} already connected to "
-                                            f"network {net_name} with subnet {current_subnet}, "
-                                            f"no reconnection needed"
-                                        )
-                                        already_on_correct_subnet = True
-                                        break
-
-                            if already_on_correct_subnet:
-                                continue
-
-                            log_info(
-                                f"Subnet changed for container {container_name}, "
-                                f"reconnecting to new network"
-                            )
-
-                            # Disconnect from old macvlan or ipvlan networks
-                            for net_name in list(container_networks.keys()):
-                                if net_name.startswith(f"macvlan_{interface}") or net_name.startswith(f"ipvlan_{interface}"):
-                                    try:
-                                        old_network = CLIENT.networks.get(net_name)
-                                        old_network.disconnect(container, force=True)
-                                        log_info(
-                                            f"Disconnected {container_name} from old network {net_name}"
-                                        )
-                                    except Exception as e:
-                                        log_debug(
-                                            f"Could not disconnect from old network {net_name}: {e}"
-                                        )
-
-                            # Create or get the appropriate network based on interface type
-                            if is_ipvlan:
-                                new_network = get_or_create_ipvlan_network(
+                            if is_wifi:
+                                # WiFi uses Proxy ARP Bridge - need to reconfigure
+                                await self._reconnect_wifi_vnic(
+                                    container, container_name, vnic_config,
                                     interface, new_subnet, new_gateway
                                 )
                             else:
-                                new_network = get_or_create_macvlan_network(
+                                # Ethernet uses MACVLAN - reconnect to new network
+                                await self._reconnect_macvlan_vnic(
+                                    container, container_name, vnic_config,
                                     interface, new_subnet, new_gateway
                                 )
-
-                            network_mode = vnic_config.get("network_mode", "dhcp")
-                            connect_kwargs = {}
-
-                            if network_mode == "static":
-                                ip_address = vnic_config.get("ip")
-                                if ip_address:
-                                    ip_address = ip_address.split("/")[0]
-                                    connect_kwargs["ipv4_address"] = ip_address
-                                    log_debug(
-                                        f"Configured static IP {ip_address} for reconnection"
-                                    )
-
-                            # Only set MAC address for MACVLAN (IPvlan shares parent MAC)
-                            if not is_ipvlan:
-                                mac_address = vnic_config.get("mac_address")
-                                if mac_address:
-                                    connect_kwargs["mac_address"] = mac_address
-                                else:
-                                    log_warning(
-                                        f"No MAC address found for {container_name}:{vnic_config.get('name')}. "
-                                        f"Docker will generate a new MAC, which may break MAC stability."
-                                    )
-
-                            new_network.connect(container, **connect_kwargs)
-                            log_info(
-                                f"Reconnected {container_name} to new network {new_network.name}"
-                            )
 
                         except docker.errors.NotFound:
                             log_warning(
@@ -871,6 +879,143 @@ class NetworkEventListener:
 
         except Exception as e:
             log_error(f"Error reconnecting containers for interface {interface}: {e}")
+
+    async def _reconnect_macvlan_vnic(
+        self,
+        container,
+        container_name: str,
+        vnic_config: dict,
+        interface: str,
+        new_subnet: str,
+        new_gateway: str,
+    ):
+        """Reconnect a MACVLAN vNIC to new network after subnet change."""
+        vnic_name = vnic_config.get("name")
+        container_networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+
+        # Check if already on correct subnet
+        for net_name in list(container_networks.keys()):
+            if net_name.startswith(f"macvlan_{interface}"):
+                current_subnet = self._get_network_subnet(net_name)
+                if current_subnet == new_subnet:
+                    log_info(
+                        f"Container {container_name} already connected to "
+                        f"network {net_name} with subnet {current_subnet}, "
+                        f"no reconnection needed"
+                    )
+                    return
+
+        log_info(
+            f"Subnet changed for container {container_name}, "
+            f"reconnecting to new MACVLAN network"
+        )
+
+        # Disconnect from old macvlan networks
+        for net_name in list(container_networks.keys()):
+            if net_name.startswith(f"macvlan_{interface}"):
+                try:
+                    old_network = CLIENT.networks.get(net_name)
+                    old_network.disconnect(container, force=True)
+                    log_info(f"Disconnected {container_name} from old network {net_name}")
+                except Exception as e:
+                    log_debug(f"Could not disconnect from old network {net_name}: {e}")
+
+        # Create or get new MACVLAN network
+        new_network = get_or_create_macvlan_network(interface, new_subnet, new_gateway)
+
+        network_mode = vnic_config.get("network_mode", "dhcp")
+        connect_kwargs = {}
+
+        if network_mode == "static":
+            ip_address = vnic_config.get("ip")
+            if ip_address:
+                ip_address = ip_address.split("/")[0]
+                connect_kwargs["ipv4_address"] = ip_address
+                log_debug(f"Configured static IP {ip_address} for reconnection")
+
+        mac_address = vnic_config.get("mac_address")
+        if mac_address:
+            connect_kwargs["mac_address"] = mac_address
+        else:
+            log_warning(
+                f"No MAC address found for {container_name}:{vnic_name}. "
+                f"Docker will generate a new MAC, which may break MAC stability."
+            )
+
+        new_network.connect(container, **connect_kwargs)
+        log_info(f"Reconnected {container_name} to new network {new_network.name}")
+
+    async def _reconnect_wifi_vnic(
+        self,
+        container,
+        container_name: str,
+        vnic_config: dict,
+        interface: str,
+        new_subnet: str,
+        new_gateway: str,
+    ):
+        """
+        Reconnect a WiFi vNIC using Proxy ARP Bridge after network change.
+
+        For static IP: Update the Proxy ARP configuration with new gateway
+        For DHCP: Request new IP via Proxy ARP DHCP and reconfigure bridge
+        """
+        from tools.docker_tools import setup_proxy_arp_bridge, cleanup_proxy_arp_bridge
+
+        vnic_name = vnic_config.get("name")
+        network_mode = vnic_config.get("network_mode", "dhcp")
+        proxy_arp_config = vnic_config.get("_proxy_arp_config", {})
+
+        container_pid = container.attrs.get("State", {}).get("Pid", 0)
+        if container_pid <= 0:
+            log_warning(f"Container {container_name} has invalid PID, cannot reconfigure WiFi vNIC")
+            return
+
+        # Clean up old Proxy ARP configuration if it exists
+        old_ip = proxy_arp_config.get("ip_address")
+        old_veth_host = proxy_arp_config.get("veth_host")
+        if old_ip and old_veth_host:
+            log_info(f"Cleaning up old Proxy ARP config for {container_name}:{vnic_name}")
+            try:
+                await asyncio.to_thread(
+                    cleanup_proxy_arp_bridge,
+                    container_name, old_ip, interface, old_veth_host
+                )
+            except Exception as e:
+                log_warning(f"Error cleaning up old Proxy ARP config: {e}")
+
+        if network_mode == "static":
+            # Static IP - use configured IP with new gateway
+            ip_address = vnic_config.get("ip")
+            if ip_address:
+                ip_address = ip_address.split("/")[0]
+                log_info(f"Reconfiguring static Proxy ARP for {container_name}:{vnic_name}")
+                try:
+                    bridge_config = await asyncio.to_thread(
+                        setup_proxy_arp_bridge,
+                        container_name, container_pid, interface,
+                        ip_address, new_gateway, "255.255.255.0"
+                    )
+                    vnic_config["_proxy_arp_config"] = bridge_config
+                    save_vnic_configs(container_name, [vnic_config])
+                    log_info(f"WiFi vNIC {vnic_name} reconfigured with gateway {new_gateway}")
+                except Exception as e:
+                    log_error(f"Failed to reconfigure static Proxy ARP: {e}")
+            else:
+                log_error(f"Static IP mode but no IP configured for {container_name}:{vnic_name}")
+        else:
+            # DHCP mode - request new IP
+            log_info(f"Requesting new DHCP for WiFi vNIC {container_name}:{vnic_name}")
+            try:
+                # Request DHCP via netmon
+                result = await self.request_wifi_dhcp(
+                    container_name, vnic_name, interface, container_pid
+                )
+                if not result.get("success"):
+                    log_warning(f"WiFi DHCP request failed: {result.get('error')}")
+                # The actual IP will arrive via dhcp_update event and trigger bridge setup
+            except Exception as e:
+                log_warning(f"Failed to request WiFi DHCP: {e}")
 
     # ========== Serial Device Handling ==========
 

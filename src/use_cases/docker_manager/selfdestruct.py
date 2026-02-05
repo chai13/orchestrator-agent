@@ -1,7 +1,7 @@
 from . import CLIENTS, get_self_container
 from tools.logger import log_info, log_warning, log_error
-from tools.docker_tools import CLIENT
-from tools.vnic_persistence import delete_vnic_configs
+from tools.docker_tools import CLIENT, cleanup_proxy_arp_bridge
+from tools.vnic_persistence import delete_vnic_configs, load_vnic_configs
 from tools.devices_usage_buffer import get_devices_usage_buffer
 from tools.operations_state import set_deleting, set_step, set_error
 import docker
@@ -22,9 +22,6 @@ INTERNAL_NETWORK_PATTERN = re.compile(
 # Format: macvlan_{interface}_{subnet}_{mask}
 MACVLAN_NETWORK_PATTERN = re.compile(r"^macvlan_[a-zA-Z0-9]+_\d+\.\d+\.\d+\.\d+_\d+$")
 
-# Pattern to match IPvlan networks created by orchestrator (for WiFi interfaces)
-# Format: ipvlan_{interface}_{subnet}_{mask}
-IPVLAN_NETWORK_PATTERN = re.compile(r"^ipvlan_[a-zA-Z0-9]+_\d+\.\d+\.\d+\.\d+_\d+$")
 
 
 def _delete_runtime_container_for_selfdestruct(container_name: str):
@@ -37,6 +34,28 @@ def _delete_runtime_container_for_selfdestruct(container_name: str):
         container_name: Name of the runtime container to delete
     """
     log_info(f"Deleting runtime container: {container_name}")
+
+    # Clean up Proxy ARP bridges before deleting container (WiFi vNICs)
+    # This must be done before container removal to ensure routes are properly cleaned
+    try:
+        all_vnic_configs = load_vnic_configs()
+        vnic_configs = all_vnic_configs.get(container_name, [])
+        for vnic_config in vnic_configs:
+            proxy_arp_config = vnic_config.get("_proxy_arp_config")
+            if proxy_arp_config:
+                ip_address = proxy_arp_config.get("ip_address")
+                parent_interface = proxy_arp_config.get("parent_interface")
+                veth_host = proxy_arp_config.get("veth_host")
+                if ip_address and parent_interface and veth_host:
+                    log_info(f"Cleaning up Proxy ARP bridge for vNIC {vnic_config.get('name')}")
+                    try:
+                        cleanup_proxy_arp_bridge(
+                            container_name, ip_address, parent_interface, veth_host
+                        )
+                    except Exception as e:
+                        log_warning(f"Error cleaning up Proxy ARP bridge: {e}")
+    except Exception as e:
+        log_warning(f"Error loading vNIC configs for Proxy ARP cleanup: {e}")
 
     try:
         container = CLIENT.containers.get(container_name)
@@ -105,6 +124,56 @@ def _delete_all_runtime_containers():
     log_info("All runtime containers deleted successfully")
 
 
+def _cleanup_proxy_arp_veths():
+    """
+    Clean up any orphaned Proxy ARP veth interfaces.
+
+    These are veth interfaces created for WiFi containers that may be left behind
+    if containers were forcefully removed without proper cleanup.
+
+    Pattern: veth-{container_short_id}
+
+    This is a best-effort cleanup that does NOT raise on failure.
+    """
+    import subprocess
+
+    log_info("Cleaning up orphaned Proxy ARP veth interfaces...")
+
+    try:
+        # List all network interfaces
+        result = subprocess.run(
+            ["ip", "-o", "link", "show"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        veths_removed = 0
+        for line in result.stdout.split("\n"):
+            # Parse interface name from ip link output
+            # Format: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> ..."
+            parts = line.split(":")
+            if len(parts) >= 2:
+                iface_name = parts[1].strip().split("@")[0]  # Handle veth@veth format
+                if iface_name.startswith("veth-"):
+                    log_info(f"Removing orphaned Proxy ARP veth: {iface_name}")
+                    try:
+                        subprocess.run(
+                            ["ip", "link", "del", iface_name],
+                            check=False,
+                            capture_output=True,
+                            timeout=5,
+                        )
+                        veths_removed += 1
+                    except Exception as e:
+                        log_warning(f"Could not remove veth {iface_name}: {e}")
+
+        log_info(f"Proxy ARP veth cleanup complete: {veths_removed} removed")
+
+    except Exception as e:
+        log_warning(f"Error during Proxy ARP veth cleanup: {e}")
+
+
 def _cleanup_orchestrator_networks():
     """
     Clean up all orchestrator-created networks that are no longer in use.
@@ -112,7 +181,6 @@ def _cleanup_orchestrator_networks():
     This removes:
     - Internal bridge networks matching UUID_internal pattern
     - MACVLAN networks matching macvlan_{interface}_{subnet}_{mask} pattern
-    - IPvlan networks matching ipvlan_{interface}_{subnet}_{mask} pattern
 
     Networks with connected containers are skipped to avoid disrupting other applications.
     This is a best-effort cleanup that does NOT raise on failure.
@@ -133,9 +201,8 @@ def _cleanup_orchestrator_networks():
 
         is_internal = INTERNAL_NETWORK_PATTERN.match(network_name)
         is_macvlan = MACVLAN_NETWORK_PATTERN.match(network_name)
-        is_ipvlan = IPVLAN_NETWORK_PATTERN.match(network_name)
 
-        if not is_internal and not is_macvlan and not is_ipvlan:
+        if not is_internal and not is_macvlan:
             continue
 
         try:
@@ -282,6 +349,9 @@ def self_destruct():
 
         set_step(ORCHESTRATOR_STATUS_ID, "cleaning_networks")
         _cleanup_orchestrator_networks()
+
+        set_step(ORCHESTRATOR_STATUS_ID, "cleaning_proxy_arp")
+        _cleanup_proxy_arp_veths()
 
         set_step(ORCHESTRATOR_STATUS_ID, "deleting_netmon")
         _delete_netmon_container()

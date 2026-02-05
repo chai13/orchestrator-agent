@@ -61,8 +61,8 @@ def get_interface_type(ifname: str) -> str:
     Detect if a network interface is WiFi or Ethernet.
 
     This information is used by the orchestrator-agent to select the appropriate
-    Docker network driver:
-    - WiFi interfaces use IPvlan (shares parent MAC, required for AP authentication)
+    networking method:
+    - WiFi interfaces use Proxy ARP Bridge (traffic routes through host's WiFi MAC)
     - Ethernet interfaces use MACVLAN (unique MAC per container)
 
     Detection methods (in order of priority):
@@ -161,78 +161,6 @@ class DHCPManager:
             logger.error(f"Error finding interface by MAC: {e}")
         return None
 
-    def _find_interface_for_ipvlan(self, container_pid: int) -> Optional[str]:
-        """
-        Find the IPvlan interface in a container's network namespace.
-
-        Since IPvlan interfaces share the parent interface's MAC address, we cannot
-        identify them by MAC (all would match the same MAC). Instead, we find the
-        interface by exclusion:
-        - Not loopback (lo)
-        - Not on internal bridge subnet (172.x.x.x - Docker's default internal range)
-
-        This works because vPLC containers have:
-        - lo: loopback
-        - eth0: internal bridge network (172.x.x.x subnet)
-        - eth1 (or similar): the IPvlan/MACVLAN interface we want
-
-        Args:
-            container_pid: PID of the container's init process
-
-        Returns:
-            Interface name (e.g., "eth1") or None if not found
-        """
-        try:
-            # Get all interfaces with their addresses
-            result = subprocess.run(
-                ["nsenter", "-t", str(container_pid), "-n", "ip", "-j", "addr", "show"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                logger.error(f"Failed to list interfaces in container PID {container_pid}")
-                return None
-
-            interfaces = json.loads(result.stdout)
-
-            for iface in interfaces:
-                ifname = iface.get("ifname", "")
-
-                # Skip loopback
-                if ifname == "lo":
-                    continue
-
-                # Check if interface is on internal bridge subnet (172.x.x.x)
-                # Docker uses 172.17.0.0/16 by default for bridge networks
-                addr_info = iface.get("addr_info", [])
-                on_internal_bridge = False
-                for addr in addr_info:
-                    if addr.get("family") == "inet":
-                        local_addr = addr.get("local", "")
-                        # Internal bridge networks use 172.x.x.x range
-                        if local_addr.startswith("172."):
-                            on_internal_bridge = True
-                            break
-
-                if on_internal_bridge:
-                    logger.debug(f"Skipping interface {ifname} (internal bridge)")
-                    continue
-
-                # This should be our IPvlan interface
-                logger.info(f"Found IPvlan interface: {ifname}")
-                return ifname
-
-            logger.warning("Could not find IPvlan interface by exclusion method")
-            return None
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse interface list: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error finding IPvlan interface: {e}")
-            return None
-
     def start_dhcp(
         self,
         container_name: str,
@@ -241,18 +169,17 @@ class DHCPManager:
         container_pid: int,
         use_client_id: bool = False,
     ) -> Dict[str, Any]:
-        """Start a DHCP client for a container's vNIC.
+        """Start a DHCP client for a container's MACVLAN vNIC.
 
         For MACVLAN networks (Ethernet), the DHCP server identifies clients by MAC address.
-        For IPvlan networks (WiFi), all containers share the same MAC, so we use DHCP
-        Option 61 (Client Identifier) to differentiate them.
+        WiFi interfaces use a separate Proxy ARP mechanism with request_wifi_dhcp().
 
         Args:
             container_name: Name of the container
             vnic_name: Name of the virtual NIC
-            mac_address: MAC address of the interface (used for MACVLAN lookup, ignored for IPvlan)
+            mac_address: MAC address of the interface (used for MACVLAN lookup)
             container_pid: PID of the container's init process (provided by orchestrator-agent)
-            use_client_id: If True, use DHCP client-id for identification (required for IPvlan/WiFi)
+            use_client_id: Deprecated, kept for API compatibility (ignored)
         """
         key = f"{container_name}:{vnic_name}"
 
@@ -279,46 +206,27 @@ class DHCPManager:
             logger.error(f"OS error accessing {netns_path}: {e}")
             return {"success": False, "error": f"Cannot access container PID {container_pid} network namespace: {e}"}
 
-        # Find the interface - method depends on network type
+        # Find the MACVLAN interface by MAC address
         max_retries = 10
         retry_delay = 0.3  # seconds
         interface = None
 
-        if use_client_id:
-            # IPvlan mode - find interface by exclusion (can't use MAC since it's shared)
-            logger.info(f"Looking for IPvlan interface in container PID {container_pid}")
-            for attempt in range(max_retries):
-                interface = self._find_interface_for_ipvlan(container_pid)
-                if interface:
-                    if attempt > 0:
-                        logger.info(f"Found IPvlan interface {interface} after {attempt + 1} attempts")
-                    break
-                if attempt < max_retries - 1:
-                    logger.debug(f"IPvlan interface not found, retrying ({attempt + 1}/{max_retries})...")
-                    time.sleep(retry_delay)
-        else:
-            # MACVLAN mode - find interface by MAC address
-            logger.info(f"Looking for interface with MAC {mac_address} in container PID {container_pid}")
-            for attempt in range(max_retries):
-                interface = self._find_interface_by_mac(container_pid, mac_address)
-                if interface:
-                    if attempt > 0:
-                        logger.info(f"Found interface {interface} after {attempt + 1} attempts")
-                    break
-                if attempt < max_retries - 1:
-                    logger.debug(f"Interface with MAC {mac_address} not found, retrying ({attempt + 1}/{max_retries})...")
-                    time.sleep(retry_delay)
+        logger.info(f"Looking for interface with MAC {mac_address} in container PID {container_pid}")
+        for attempt in range(max_retries):
+            interface = self._find_interface_by_mac(container_pid, mac_address)
+            if interface:
+                if attempt > 0:
+                    logger.info(f"Found interface {interface} after {attempt + 1} attempts")
+                break
+            if attempt < max_retries - 1:
+                logger.debug(f"Interface with MAC {mac_address} not found, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(retry_delay)
 
         if not interface:
-            if use_client_id:
-                logger.error(f"IPvlan interface not found in container PID {container_pid} after {max_retries} attempts")
-                return {"success": False, "error": f"IPvlan interface not found in container after {max_retries} retries"}
-            else:
-                logger.error(f"Interface with MAC {mac_address} not found in container PID {container_pid} after {max_retries} attempts")
-                return {"success": False, "error": f"Interface with MAC {mac_address} not found in container after {max_retries} retries"}
+            logger.error(f"Interface with MAC {mac_address} not found in container PID {container_pid} after {max_retries} attempts")
+            return {"success": False, "error": f"Interface with MAC {mac_address} not found in container after {max_retries} retries"}
 
-        mode_str = "IPvlan (client-id)" if use_client_id else f"MACVLAN (MAC: {mac_address})"
-        logger.info(f"Starting DHCP client for {key} on interface {interface} [{mode_str}]")
+        logger.info(f"Starting DHCP client for {key} on interface {interface} [MACVLAN (MAC: {mac_address})]")
 
         try:
             # Create unique lease file key by replacing : with _ (filesystem-safe)
@@ -338,16 +246,6 @@ class DHCPManager:
                 "-t", "5", "-T", "3",
             ]
 
-            # For IPvlan: add unique client-id so DHCP server treats each container differently
-            # even though they all share the same MAC address
-            if use_client_id:
-                # Encode container:vnic as hex for DHCP option 61 (Client Identifier)
-                # Format: 0x3d (option 61) followed by hex-encoded identifier
-                client_id_str = f"{container_name}:{vnic_name}"
-                client_id_hex = client_id_str.encode('utf-8').hex()
-                cmd.extend(["-x", f"0x3d:{client_id_hex}"])
-                logger.info(f"Using DHCP client-id: {client_id_str} (hex: {client_id_hex[:20]}...)")
-
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -366,7 +264,6 @@ class DHCPManager:
                 "lease_file": lease_file,
                 "lease_key": lease_key,
                 "pid": container_pid,
-                "use_client_id": use_client_id,  # Preserve for restart
             }
 
             logger.info(f"DHCP client started for {key} (PID: {proc.pid})")
@@ -396,6 +293,100 @@ class DHCPManager:
             return {"success": True, "message": f"DHCP client stopped for {key}"}
         except Exception as e:
             logger.error(f"Error stopping DHCP client for {key}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def request_wifi_dhcp(
+        self,
+        container_name: str,
+        vnic_name: str,
+        parent_interface: str,
+        container_pid: int,
+        client_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Request DHCP for a WiFi vNIC using Proxy ARP method.
+
+        Unlike standard DHCP which runs inside the container, Proxy ARP DHCP
+        runs on the host's WiFi interface with a unique client-id (DHCP option 61).
+        This allows multiple containers to obtain different IPs on the same WiFi network.
+
+        The DHCP response is monitored via lease files and sent as a dhcp_update event.
+
+        Args:
+            container_name: Name of the container
+            vnic_name: Name of the virtual NIC
+            parent_interface: WiFi interface on host (e.g., "wlan0")
+            container_pid: PID of the container (for proxy ARP setup later)
+            client_id: Unique identifier for DHCP option 61
+
+        Returns:
+            Dict with success status. Actual IP comes via dhcp_update event.
+        """
+        key = f"{container_name}:{vnic_name}"
+
+        if key in self.dhcp_processes:
+            proc = self.dhcp_processes[key]
+            if proc.poll() is None:
+                logger.info(f"WiFi DHCP client already running for {key}")
+                return {"success": True, "message": "WiFi DHCP client already running"}
+
+        logger.info(
+            f"Starting WiFi DHCP for {key} on {parent_interface} with client-id: {client_id}"
+        )
+
+        try:
+            # Create unique lease file key
+            lease_key = key.replace(":", "_")
+
+            # Set up environment for the udhcpc script
+            env = os.environ.copy()
+            env["ORCH_DHCP_KEY"] = lease_key
+
+            # Encode client-id as hex for DHCP option 61
+            client_id_hex = client_id.encode("utf-8").hex()
+
+            # Run udhcpc on the host's WiFi interface (NOT inside container netns)
+            # The -x option sets DHCP option 61 (Client Identifier)
+            cmd = [
+                "udhcpc",
+                "-f",  # foreground
+                "-i", parent_interface,  # WiFi interface on host
+                "-s", "/usr/share/udhcpc/default.script",
+                "-t", "5",  # retries
+                "-T", "3",  # timeout
+                "-x", f"0x3d:{client_id_hex}",  # Client Identifier (option 61)
+            ]
+
+            logger.info(f"Running WiFi DHCP: {' '.join(cmd)}")
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            self.dhcp_processes[key] = proc
+
+            # Store metadata for lease monitoring
+            lease_file = os.path.join(DHCP_LEASE_DIR, f"{lease_key}.lease")
+            self.last_lease_state[key] = {
+                "container_name": container_name,
+                "vnic_name": vnic_name,
+                "mac_address": None,  # WiFi shares parent MAC
+                "interface": parent_interface,
+                "lease_file": lease_file,
+                "lease_key": lease_key,
+                "pid": container_pid,
+                "use_client_id": True,
+                "is_wifi_proxy_arp": True,
+                "client_id": client_id,
+            }
+
+            logger.info(f"WiFi DHCP client started for {key} (PID: {proc.pid})")
+            return {"success": True, "message": f"WiFi DHCP client started on {parent_interface}"}
+
+        except Exception as e:
+            logger.error(f"Failed to start WiFi DHCP client for {key}: {e}")
             return {"success": False, "error": str(e)}
 
     def _monitor_leases(self):
@@ -450,13 +441,23 @@ class DHCPManager:
                         logger.warning(f"DHCP client for {key} died, restarting...")
                         state = self.last_lease_state.get(key)
                         if state and state.get("pid"):
-                            self.start_dhcp(
-                                state["container_name"],
-                                state["vnic_name"],
-                                state["mac_address"],
-                                state["pid"],
-                                state.get("use_client_id", False),  # Preserve IPvlan mode
-                            )
+                            if state.get("is_wifi_proxy_arp"):
+                                # WiFi Proxy ARP DHCP - restart with client_id
+                                self.request_wifi_dhcp(
+                                    state["container_name"],
+                                    state["vnic_name"],
+                                    state["interface"],
+                                    state["pid"],
+                                    state.get("client_id", f"{state['container_name']}:{state['vnic_name']}"),
+                                )
+                            else:
+                                # MACVLAN DHCP - restart with MAC address
+                                self.start_dhcp(
+                                    state["container_name"],
+                                    state["vnic_name"],
+                                    state["mac_address"],
+                                    state["pid"],
+                                )
                         else:
                             logger.error(f"Cannot restart DHCP for {key}: missing PID in state")
 
@@ -1397,7 +1398,6 @@ class NetworkMonitor:
             vnic_name = command.get("vnic_name")
             mac_address = command.get("mac_address")
             container_pid = command.get("container_pid")
-            use_client_id = command.get("use_client_id", False)
 
             # Validate each parameter explicitly for better error messages
             if not container_name:
@@ -1406,9 +1406,8 @@ class NetworkMonitor:
             if not vnic_name:
                 logger.error("start_dhcp: missing vnic_name")
                 return {"success": False, "error": "Missing vnic_name"}
-            # mac_address is optional for IPvlan (use_client_id=True) but required for MACVLAN
-            if not mac_address and not use_client_id:
-                logger.error("start_dhcp: missing mac_address (required for MACVLAN)")
+            if not mac_address:
+                logger.error("start_dhcp: missing mac_address")
                 return {"success": False, "error": "Missing mac_address"}
             if container_pid is None:
                 logger.error("start_dhcp: missing container_pid")
@@ -1421,9 +1420,8 @@ class NetworkMonitor:
                 logger.error(f"start_dhcp: invalid container_pid type: {type(container_pid)}, value: {container_pid}")
                 return {"success": False, "error": f"Invalid container_pid: {container_pid}"}
 
-            mode_str = "IPvlan/client-id" if use_client_id else "MACVLAN/MAC"
-            logger.info(f"start_dhcp: container={container_name}, vnic={vnic_name}, mac={mac_address}, pid={container_pid}, mode={mode_str}")
-            result = self.dhcp_manager.start_dhcp(container_name, vnic_name, mac_address, container_pid, use_client_id)
+            logger.info(f"start_dhcp: container={container_name}, vnic={vnic_name}, mac={mac_address}, pid={container_pid}")
+            result = self.dhcp_manager.start_dhcp(container_name, vnic_name, mac_address, container_pid)
             logger.info(f"start_dhcp result: {result}")
             return result
 
@@ -1434,6 +1432,22 @@ class NetworkMonitor:
                 return {"success": False, "error": "Missing required parameters"}
             key = f"{container_name}:{vnic_name}"
             return self.dhcp_manager.stop_dhcp(key)
+
+        elif cmd_type == "request_wifi_dhcp":
+            # Proxy ARP WiFi DHCP: Request DHCP on host's WiFi interface
+            # with unique client-id to get IP for container
+            container_name = command.get("container_name")
+            vnic_name = command.get("vnic_name")
+            parent_interface = command.get("parent_interface")
+            container_pid = command.get("container_pid")
+            client_id = command.get("client_id")
+
+            if not all([container_name, vnic_name, parent_interface, container_pid, client_id]):
+                return {"success": False, "error": "Missing required parameters for WiFi DHCP"}
+
+            return self.dhcp_manager.request_wifi_dhcp(
+                container_name, vnic_name, parent_interface, container_pid, client_id
+            )
 
         elif cmd_type == "get_dhcp_status":
             return {"success": True, "status": self.dhcp_manager.get_status()}
