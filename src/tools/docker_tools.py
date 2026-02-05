@@ -258,6 +258,176 @@ def get_or_create_macvlan_network(
             raise
 
 
+def get_ipvlan_network_key(
+    parent_interface: str,
+    parent_subnet: str = None,
+    parent_gateway: str = None,
+) -> str:
+    """
+    Compute the IPvlan network key (name) for a given interface and subnet configuration.
+    This is used for validation to detect duplicate vNIC configurations that would
+    resolve to the same network.
+
+    IMPORTANT: This function intentionally mirrors the subnet resolution logic in
+    get_or_create_ipvlan_network() to ensure validation produces the same network
+    key that actual network creation would use.
+
+    Args:
+        parent_interface: Physical network interface on host
+        parent_subnet: Subnet in netmask or CIDR format (optional, auto-detected if not provided)
+        parent_gateway: Gateway address (optional, auto-detected if not provided)
+
+    Returns:
+        The network key string that would be used as the Docker network name.
+        Returns a key based on interface only if subnet cannot be determined.
+    """
+    if parent_subnet and parent_gateway:
+        if is_cidr_format(parent_subnet):
+            resolved_subnet = parent_subnet
+        else:
+            cidr_prefix = netmask_to_cidr(parent_subnet)
+            network_base = calculate_network_base(parent_gateway, parent_subnet)
+            resolved_subnet = f"{network_base}/{cidr_prefix}"
+    else:
+        resolved_subnet, _ = detect_interface_network(parent_interface)
+        if not resolved_subnet:
+            return f"ipvlan_{parent_interface}_unknown"
+
+    return f"ipvlan_{parent_interface}_{resolved_subnet.replace('/', '_')}"
+
+
+def get_or_create_ipvlan_network(
+    parent_interface: str,
+    parent_subnet: str = None,
+    parent_gateway: str = None,
+):
+    """
+    Get existing IPvlan L2 network for a parent interface or create a new one.
+
+    IPvlan L2 mode allows containers to share the parent interface's MAC address
+    while having unique IP addresses. This is essential for WiFi interfaces where
+    access points only accept traffic from MAC addresses that have completed
+    802.11 authentication.
+
+    Unlike MACVLAN (which gives each container a unique MAC), IPvlan containers
+    all use the parent's MAC. This means:
+    - WiFi AP authentication works (same MAC as authenticated host)
+    - DHCP requires client-id differentiation (handled by netmon)
+    - Host cannot directly communicate with containers (Linux limitation)
+
+    Args:
+        parent_interface: Physical network interface on host (e.g., "wlan0")
+        parent_subnet: Subnet in netmask or CIDR format (optional, auto-detected)
+        parent_gateway: Gateway address (optional, auto-detected)
+
+    Returns:
+        Docker network object
+    """
+    if parent_subnet and parent_gateway:
+        if is_cidr_format(parent_subnet):
+            log_debug(f"Subnet already in CIDR format: {parent_subnet}")
+        else:
+            cidr_prefix = netmask_to_cidr(parent_subnet)
+            network_base = calculate_network_base(parent_gateway, parent_subnet)
+            parent_subnet = f"{network_base}/{cidr_prefix}"
+            log_debug(f"Converted netmask to CIDR notation: {parent_subnet}")
+    else:
+        parent_subnet, parent_gateway = detect_interface_network(parent_interface)
+
+        if not parent_subnet:
+            raise ValueError(
+                f"Could not detect subnet for interface {parent_interface}. "
+                f"The interface may not exist or netmon may not be running."
+            )
+
+    # Use different naming pattern from MACVLAN to distinguish network types
+    network_name = f"ipvlan_{parent_interface}_{parent_subnet.replace('/', '_')}"
+
+    try:
+        network = CLIENT.networks.get(network_name)
+
+        # Validate the network actually exists (not a stale reference)
+        if _validate_network_exists(network):
+            log_debug(f"IPvlan network {network_name} already exists, reusing it")
+            return network
+        else:
+            # Network lookup succeeded but it's stale - try to remove it
+            log_warning(
+                f"IPvlan network {network_name} exists but is stale (underlying network not found). "
+                f"Removing stale reference and recreating..."
+            )
+            try:
+                network.remove()
+            except Exception as remove_err:
+                log_debug(f"Could not remove stale network {network_name}: {remove_err}")
+            # Fall through to create a new network
+
+    except docker.errors.NotFound:
+        pass  # Network doesn't exist, will create below
+
+    log_info(
+        f"Creating new IPvlan L2 network {network_name} for parent interface {parent_interface} "
+        f"with subnet {parent_subnet} and gateway {parent_gateway}"
+    )
+    try:
+        ipam_pool_config = {"subnet": parent_subnet}
+        if parent_gateway:
+            ipam_pool_config["gateway"] = parent_gateway
+
+        ipam_pool = docker.types.IPAMPool(**ipam_pool_config)
+        ipam_config = docker.types.IPAMConfig(pool_configs=[ipam_pool])
+        network = CLIENT.networks.create(
+            name=network_name,
+            driver="ipvlan",
+            driver_opts={
+                "parent": parent_interface,
+                "ipvlan_mode": "l2",
+            },
+            ipam=ipam_config,
+        )
+        log_info(f"IPvlan L2 network {network_name} created successfully")
+        return network
+    except docker.errors.APIError as e:
+        if "overlaps" in str(e).lower():
+            log_warning(
+                f"Network overlap detected for subnet {parent_subnet}. "
+                f"Searching for existing IPvlan network to reuse..."
+            )
+
+            try:
+                all_networks = CLIENT.networks.list()
+                for net in all_networks:
+                    if net.attrs.get("Driver") == "ipvlan":
+                        net_options = net.attrs.get("Options", {})
+                        net_parent = net_options.get("parent")
+
+                        ipam = net.attrs.get("IPAM", {})
+                        if ipam and ipam.get("Config"):
+                            for config in ipam["Config"]:
+                                net_subnet = config.get("Subnet")
+                                if (
+                                    net_subnet == parent_subnet
+                                    and net_parent == parent_interface
+                                ):
+                                    log_info(
+                                        f"Found existing IPvlan network {net.name} with matching "
+                                        f"subnet {parent_subnet} and parent {parent_interface}. Reusing it."
+                                    )
+                                    return net
+
+                log_error(
+                    f"Network overlap error but could not find existing IPvlan network "
+                    f"for subnet {parent_subnet} and parent {parent_interface}"
+                )
+                raise
+            except Exception as search_error:
+                log_error(f"Error searching for existing networks: {search_error}")
+                raise
+        else:
+            log_error(f"Failed to create IPvlan network {network_name}: {e}")
+            raise
+
+
 def get_existing_mac_addresses_on_interface(parent_interface: str) -> dict[str, str]:
     """
     Get all MAC addresses currently in use by containers on MACVLAN networks

@@ -161,16 +161,98 @@ class DHCPManager:
             logger.error(f"Error finding interface by MAC: {e}")
         return None
 
+    def _find_interface_for_ipvlan(self, container_pid: int) -> Optional[str]:
+        """
+        Find the IPvlan interface in a container's network namespace.
+
+        Since IPvlan interfaces share the parent interface's MAC address, we cannot
+        identify them by MAC (all would match the same MAC). Instead, we find the
+        interface by exclusion:
+        - Not loopback (lo)
+        - Not on internal bridge subnet (172.x.x.x - Docker's default internal range)
+
+        This works because vPLC containers have:
+        - lo: loopback
+        - eth0: internal bridge network (172.x.x.x subnet)
+        - eth1 (or similar): the IPvlan/MACVLAN interface we want
+
+        Args:
+            container_pid: PID of the container's init process
+
+        Returns:
+            Interface name (e.g., "eth1") or None if not found
+        """
+        try:
+            # Get all interfaces with their addresses
+            result = subprocess.run(
+                ["nsenter", "-t", str(container_pid), "-n", "ip", "-j", "addr", "show"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                logger.error(f"Failed to list interfaces in container PID {container_pid}")
+                return None
+
+            interfaces = json.loads(result.stdout)
+
+            for iface in interfaces:
+                ifname = iface.get("ifname", "")
+
+                # Skip loopback
+                if ifname == "lo":
+                    continue
+
+                # Check if interface is on internal bridge subnet (172.x.x.x)
+                # Docker uses 172.17.0.0/16 by default for bridge networks
+                addr_info = iface.get("addr_info", [])
+                on_internal_bridge = False
+                for addr in addr_info:
+                    if addr.get("family") == "inet":
+                        local_addr = addr.get("local", "")
+                        # Internal bridge networks use 172.x.x.x range
+                        if local_addr.startswith("172."):
+                            on_internal_bridge = True
+                            break
+
+                if on_internal_bridge:
+                    logger.debug(f"Skipping interface {ifname} (internal bridge)")
+                    continue
+
+                # This should be our IPvlan interface
+                logger.info(f"Found IPvlan interface: {ifname}")
+                return ifname
+
+            logger.warning("Could not find IPvlan interface by exclusion method")
+            return None
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse interface list: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding IPvlan interface: {e}")
+            return None
+
     def start_dhcp(
-        self, container_name: str, vnic_name: str, mac_address: str, container_pid: int
+        self,
+        container_name: str,
+        vnic_name: str,
+        mac_address: str,
+        container_pid: int,
+        use_client_id: bool = False,
     ) -> Dict[str, Any]:
         """Start a DHCP client for a container's vNIC.
-        
+
+        For MACVLAN networks (Ethernet), the DHCP server identifies clients by MAC address.
+        For IPvlan networks (WiFi), all containers share the same MAC, so we use DHCP
+        Option 61 (Client Identifier) to differentiate them.
+
         Args:
             container_name: Name of the container
             vnic_name: Name of the virtual NIC
-            mac_address: MAC address of the interface to find
+            mac_address: MAC address of the interface (used for MACVLAN lookup, ignored for IPvlan)
             container_pid: PID of the container's init process (provided by orchestrator-agent)
+            use_client_id: If True, use DHCP client-id for identification (required for IPvlan/WiFi)
         """
         key = f"{container_name}:{vnic_name}"
 
@@ -183,7 +265,7 @@ class DHCPManager:
         if not container_pid or container_pid <= 0:
             logger.error(f"Invalid container PID: {container_pid}")
             return {"success": False, "error": f"Invalid container PID: {container_pid}"}
-        
+
         netns_path = f"/proc/{container_pid}/ns/net"
         try:
             os.stat(netns_path)
@@ -197,48 +279,77 @@ class DHCPManager:
             logger.error(f"OS error accessing {netns_path}: {e}")
             return {"success": False, "error": f"Cannot access container PID {container_pid} network namespace: {e}"}
 
-        logger.info(f"Looking for interface with MAC {mac_address} in container PID {container_pid}")
-        
-        # Retry interface discovery with backoff - interface may not be immediately
-        # visible after network.connect() due to kernel/Docker timing
+        # Find the interface - method depends on network type
         max_retries = 10
         retry_delay = 0.3  # seconds
         interface = None
-        
-        for attempt in range(max_retries):
-            interface = self._find_interface_by_mac(container_pid, mac_address)
-            if interface:
-                if attempt > 0:
-                    logger.info(f"Found interface {interface} after {attempt + 1} attempts")
-                break
-            if attempt < max_retries - 1:
-                logger.debug(f"Interface with MAC {mac_address} not found, retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(retry_delay)
-        
-        if not interface:
-            logger.error(f"Interface with MAC {mac_address} not found in container PID {container_pid} after {max_retries} attempts")
-            return {"success": False, "error": f"Interface with MAC {mac_address} not found in container after {max_retries} retries"}
 
-        logger.info(f"Starting DHCP client for {key} on interface {interface} (MAC: {mac_address})")
+        if use_client_id:
+            # IPvlan mode - find interface by exclusion (can't use MAC since it's shared)
+            logger.info(f"Looking for IPvlan interface in container PID {container_pid}")
+            for attempt in range(max_retries):
+                interface = self._find_interface_for_ipvlan(container_pid)
+                if interface:
+                    if attempt > 0:
+                        logger.info(f"Found IPvlan interface {interface} after {attempt + 1} attempts")
+                    break
+                if attempt < max_retries - 1:
+                    logger.debug(f"IPvlan interface not found, retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(retry_delay)
+        else:
+            # MACVLAN mode - find interface by MAC address
+            logger.info(f"Looking for interface with MAC {mac_address} in container PID {container_pid}")
+            for attempt in range(max_retries):
+                interface = self._find_interface_by_mac(container_pid, mac_address)
+                if interface:
+                    if attempt > 0:
+                        logger.info(f"Found interface {interface} after {attempt + 1} attempts")
+                    break
+                if attempt < max_retries - 1:
+                    logger.debug(f"Interface with MAC {mac_address} not found, retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(retry_delay)
+
+        if not interface:
+            if use_client_id:
+                logger.error(f"IPvlan interface not found in container PID {container_pid} after {max_retries} attempts")
+                return {"success": False, "error": f"IPvlan interface not found in container after {max_retries} retries"}
+            else:
+                logger.error(f"Interface with MAC {mac_address} not found in container PID {container_pid} after {max_retries} attempts")
+                return {"success": False, "error": f"Interface with MAC {mac_address} not found in container after {max_retries} retries"}
+
+        mode_str = "IPvlan (client-id)" if use_client_id else f"MACVLAN (MAC: {mac_address})"
+        logger.info(f"Starting DHCP client for {key} on interface {interface} [{mode_str}]")
 
         try:
             # Create unique lease file key by replacing : with _ (filesystem-safe)
             lease_key = key.replace(":", "_")
-            
+
             # Set up environment with ORCH_DHCP_KEY for the udhcpc script
             # This ensures each container:vnic gets its own lease file
             env = os.environ.copy()
             env["ORCH_DHCP_KEY"] = lease_key
-            
-            # Run udhcpc inside the container's network namespace
+
+            # Build udhcpc command
             # -f: foreground, -i: interface, -s: script, -t: retries, -T: timeout
+            cmd = [
+                "nsenter", "-t", str(container_pid), "-n",
+                "udhcpc", "-f", "-i", interface,
+                "-s", "/usr/share/udhcpc/default.script",
+                "-t", "5", "-T", "3",
+            ]
+
+            # For IPvlan: add unique client-id so DHCP server treats each container differently
+            # even though they all share the same MAC address
+            if use_client_id:
+                # Encode container:vnic as hex for DHCP option 61 (Client Identifier)
+                # Format: 0x3d (option 61) followed by hex-encoded identifier
+                client_id_str = f"{container_name}:{vnic_name}"
+                client_id_hex = client_id_str.encode('utf-8').hex()
+                cmd.extend(["-x", f"0x3d:{client_id_hex}"])
+                logger.info(f"Using DHCP client-id: {client_id_str} (hex: {client_id_hex[:20]}...)")
+
             proc = subprocess.Popen(
-                [
-                    "nsenter", "-t", str(container_pid), "-n",
-                    "udhcpc", "-f", "-i", interface,
-                    "-s", "/usr/share/udhcpc/default.script",
-                    "-t", "5", "-T", "3",
-                ],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
@@ -255,6 +366,7 @@ class DHCPManager:
                 "lease_file": lease_file,
                 "lease_key": lease_key,
                 "pid": container_pid,
+                "use_client_id": use_client_id,  # Preserve for restart
             }
 
             logger.info(f"DHCP client started for {key} (PID: {proc.pid})")
@@ -343,6 +455,7 @@ class DHCPManager:
                                 state["vnic_name"],
                                 state["mac_address"],
                                 state["pid"],
+                                state.get("use_client_id", False),  # Preserve IPvlan mode
                             )
                         else:
                             logger.error(f"Cannot restart DHCP for {key}: missing PID in state")
@@ -1284,7 +1397,8 @@ class NetworkMonitor:
             vnic_name = command.get("vnic_name")
             mac_address = command.get("mac_address")
             container_pid = command.get("container_pid")
-            
+            use_client_id = command.get("use_client_id", False)
+
             # Validate each parameter explicitly for better error messages
             if not container_name:
                 logger.error("start_dhcp: missing container_name")
@@ -1292,22 +1406,24 @@ class NetworkMonitor:
             if not vnic_name:
                 logger.error("start_dhcp: missing vnic_name")
                 return {"success": False, "error": "Missing vnic_name"}
-            if not mac_address:
-                logger.error("start_dhcp: missing mac_address")
+            # mac_address is optional for IPvlan (use_client_id=True) but required for MACVLAN
+            if not mac_address and not use_client_id:
+                logger.error("start_dhcp: missing mac_address (required for MACVLAN)")
                 return {"success": False, "error": "Missing mac_address"}
             if container_pid is None:
                 logger.error("start_dhcp: missing container_pid")
                 return {"success": False, "error": "Missing container_pid"}
-            
+
             # Ensure container_pid is an integer (JSON may send it as string)
             try:
                 container_pid = int(container_pid)
             except (ValueError, TypeError) as e:
                 logger.error(f"start_dhcp: invalid container_pid type: {type(container_pid)}, value: {container_pid}")
                 return {"success": False, "error": f"Invalid container_pid: {container_pid}"}
-            
-            logger.info(f"start_dhcp: container={container_name}, vnic={vnic_name}, mac={mac_address}, pid={container_pid}")
-            result = self.dhcp_manager.start_dhcp(container_name, vnic_name, mac_address, container_pid)
+
+            mode_str = "IPvlan/client-id" if use_client_id else "MACVLAN/MAC"
+            logger.info(f"start_dhcp: container={container_name}, vnic={vnic_name}, mac={mac_address}, pid={container_pid}, mode={mode_str}")
+            result = self.dhcp_manager.start_dhcp(container_name, vnic_name, mac_address, container_pid, use_client_id)
             logger.info(f"start_dhcp result: {result}")
             return result
 
