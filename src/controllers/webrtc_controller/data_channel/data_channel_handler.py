@@ -1,12 +1,13 @@
 """
-Keepalive Data Channel
+Data Channel Handler
 
-Manages WebRTC data channel lifecycle, connection keep-alive, and command execution.
-Handles ping/pong messages to maintain session activity and run_command messages
+Manages WebRTC data channel lifecycle, message routing, and command execution.
+Handles ping/pong keep-alive, chunked message reassembly, and run_command messages
 to execute HTTP commands on runtime containers.
 """
 
 from tools.logger import log_info, log_debug, log_error
+from tools.chunking import ChunkReassembler, split_into_chunks
 from ..types import SessionState
 import json
 import asyncio
@@ -17,9 +18,9 @@ from typing import Optional
 PING_INTERVAL = 30
 
 
-class KeepaliveChannel:
+class DataChannelHandler:
     """
-    Manages a WebRTC data channel for connection keep-alive and command execution.
+    Manages a WebRTC data channel: lifecycle, message routing, and command execution.
 
     Message Protocol:
         Ping/Pong (bidirectional):
@@ -39,7 +40,7 @@ class KeepaliveChannel:
 
     def __init__(self, data_channel, session_id: str, session_manager=None):
         """
-        Initialize keepalive channel.
+        Initialize data channel handler.
 
         Args:
             data_channel: RTCDataChannel instance
@@ -52,6 +53,7 @@ class KeepaliveChannel:
         self._closed = False
         self._ready = False
         self._ping_task: Optional[asyncio.Task] = None
+        self._chunk_reassembler = ChunkReassembler()
         self._setup_handlers()
 
     def _setup_handlers(self):
@@ -126,24 +128,44 @@ class KeepaliveChannel:
             if self.session_manager:
                 self.session_manager.touch_session(self.session_id)
 
-            if msg_type == "ping":
-                self._send_message({"type": "pong"})
-                log_debug(f"Responded to ping for session {self.session_id}")
-            elif msg_type == "pong":
-                # Keep-alive acknowledgment received
-                log_debug(f"Received pong for session {self.session_id}")
-            elif msg_type == "close":
-                log_info(f"Close request received for session {self.session_id}")
-                self.close()
-            elif msg_type == "run_command":
-                await self._handle_run_command(message)
-            else:
-                log_debug(f"Unknown message type for session {self.session_id}: {msg_type}")
+            # Check for chunk protocol messages
+            if self._chunk_reassembler.is_chunk_message(msg_type):
+                assembled = self._chunk_reassembler.handle_chunk_message(message)
+                if assembled:
+                    # Reassembly complete — parse and dispatch the full message
+                    full_message = json.loads(assembled)
+                    await self._dispatch_message(full_message)
+                return
+
+            await self._dispatch_message(message)
 
         except json.JSONDecodeError as e:
             log_error(f"Invalid JSON message in session {self.session_id}: {e}")
         except Exception as e:
             log_error(f"Error handling message in session {self.session_id}: {e}")
+
+    async def _dispatch_message(self, message: dict):
+        """
+        Route a parsed message to the appropriate handler.
+
+        Args:
+            message: Parsed message dict
+        """
+        msg_type = message.get("type")
+
+        if msg_type == "ping":
+            self._send_message({"type": "pong"})
+            log_debug(f"Responded to ping for session {self.session_id}")
+        elif msg_type == "pong":
+            # Keep-alive acknowledgment received
+            log_debug(f"Received pong for session {self.session_id}")
+        elif msg_type == "close":
+            log_info(f"Close request received for session {self.session_id}")
+            self.close()
+        elif msg_type == "run_command":
+            await self._handle_run_command(message)
+        else:
+            log_debug(f"Unknown message type for session {self.session_id}: {msg_type}")
 
     async def _handle_run_command(self, message: dict):
         """
@@ -210,7 +232,7 @@ class KeepaliveChannel:
 
     def _send_message(self, message: dict):
         """
-        Send message to browser via data channel.
+        Send message to browser via data channel, using chunking for large messages.
 
         Args:
             message: Message dict to send as JSON
@@ -220,7 +242,8 @@ class KeepaliveChannel:
 
         try:
             if self.channel.readyState == "open":
-                self.channel.send(json.dumps(message))
+                for chunk in split_into_chunks(json.dumps(message)):
+                    self.channel.send(chunk)
             else:
                 log_debug(f"Cannot send message, channel state: {self.channel.readyState}")
         except Exception as e:
@@ -234,7 +257,7 @@ class KeepaliveChannel:
         self._closed = True
         self._ready = False
 
-        log_info(f"Closing keepalive channel for session {self.session_id}")
+        log_info(f"Closing data channel handler for session {self.session_id}")
 
         # Cancel ping task
         if self._ping_task:
@@ -248,7 +271,7 @@ class KeepaliveChannel:
             except Exception as e:
                 log_debug(f"Error closing data channel: {e}")
 
-        log_info(f"Keepalive channel closed for session {self.session_id}")
+        log_info(f"Data channel handler closed for session {self.session_id}")
 
     @property
     def is_ready(self) -> bool:

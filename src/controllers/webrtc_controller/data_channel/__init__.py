@@ -1,9 +1,9 @@
 """
 WebRTC Data Channel Module
 
-Handles WebRTC data channels for connection keep-alive.
+Handles WebRTC data channel lifecycle, message routing, and command execution.
 """
 
-from .keepalive_channel import KeepaliveChannel
+from .data_channel_handler import DataChannelHandler
 
-__all__ = ["KeepaliveChannel"]
+__all__ = ["DataChannelHandler"]

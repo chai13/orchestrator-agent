@@ -14,7 +14,7 @@ from tools.contract_validation import (
 )
 from use_cases.docker_manager import CLIENTS
 from ..types import SessionState
-from ..data_channel import KeepaliveChannel
+from ..data_channel import DataChannelHandler
 
 
 NAME = "webrtc:offer"
@@ -139,10 +139,10 @@ def init(client, session_manager):
                 log_info(f"Channel state: {channel.readyState}")
                 session_manager.set_data_channel(session_id, channel)
 
-                log_info(f"Creating KeepaliveChannel for session {session_id}")
-                keepalive = KeepaliveChannel(channel, session_id, session_manager)
-                session_manager.set_keepalive_channel(session_id, keepalive)
-                log_info(f"KeepaliveChannel created successfully")
+                log_info(f"Creating DataChannelHandler for session {session_id}")
+                handler = DataChannelHandler(channel, session_id, session_manager)
+                session_manager.set_channel_handler(session_id, handler)
+                log_info(f"DataChannelHandler created successfully")
 
             # Set remote description (the offer from browser)
             log_info(f"Setting remote description (browser's offer)")

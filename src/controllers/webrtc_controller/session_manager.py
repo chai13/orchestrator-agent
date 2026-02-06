@@ -105,7 +105,7 @@ class WebRTCSessionManager:
                 "pc": pc,
                 "device_id": device_id,
                 "data_channel": None,
-                "keepalive_channel": None,
+                "channel_handler": None,
                 "state": SessionState.CREATED,
                 "created_at": now,
                 "last_activity": now,
@@ -172,13 +172,13 @@ class WebRTCSessionManager:
         session["state"] = SessionState.CLOSED
         pc = session["pc"]
 
-        # Close keepalive channel if exists
-        keepalive_channel = session.get("keepalive_channel")
-        if keepalive_channel:
+        # Close channel handler if exists
+        channel_handler = session.get("channel_handler")
+        if channel_handler:
             try:
-                keepalive_channel.close()
+                channel_handler.close()
             except Exception as e:
-                log_debug(f"Error closing keepalive channel: {e}")
+                log_debug(f"Error closing channel handler: {e}")
 
         # Close peer connection
         try:
@@ -247,19 +247,19 @@ class WebRTCSessionManager:
             return True
         return False
 
-    def set_keepalive_channel(self, session_id: str, keepalive_channel) -> bool:
-        """Associate a keepalive channel with a session."""
+    def set_channel_handler(self, session_id: str, channel_handler) -> bool:
+        """Associate a data channel handler with a session."""
         session = self._sessions.get(session_id)
         if session:
-            session["keepalive_channel"] = keepalive_channel
+            session["channel_handler"] = channel_handler
             session["last_activity"] = datetime.now()
             return True
         return False
 
-    def get_keepalive_channel(self, session_id: str):
-        """Get the keepalive channel for a session."""
+    def get_channel_handler(self, session_id: str):
+        """Get the data channel handler for a session."""
         session = self._sessions.get(session_id)
-        return session.get("keepalive_channel") if session else None
+        return session.get("channel_handler") if session else None
 
     def on_session_closed(self, callback: Callable):
         """Register a callback for when sessions are closed."""
