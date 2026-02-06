@@ -338,25 +338,14 @@ class NetworkEventListener:
         vnic_name: str,
         mac_address: str,
         container_pid: int,
-        use_client_id: bool = False,
     ) -> dict:
-        """
-        Request netmon to start DHCP client for a container's vNIC.
-
-        Args:
-            container_name: Name of the container
-            vnic_name: Name of the virtual NIC
-            mac_address: MAC address for MACVLAN interface
-            container_pid: PID of the container's init process
-            use_client_id: If True, use DHCP client-id for identification (for Proxy ARP/WiFi)
-        """
+        """Request netmon to start DHCP client for a container's MACVLAN vNIC."""
         command = {
             "command": "start_dhcp",
             "container_name": container_name,
             "vnic_name": vnic_name,
             "mac_address": mac_address,
             "container_pid": container_pid,
-            "use_client_id": use_client_id,
         }
         return await self.send_command(command)
 
@@ -1049,7 +1038,7 @@ class NetworkEventListener:
                 try:
                     await self.setup_proxy_arp_bridge(
                         container_name, container_pid, interface,
-                        ip_address, new_gateway, "255.255.255.0"
+                        ip_address, new_gateway, vnic_config.get("subnet", "255.255.255.0")
                     )
                     # Build proxy_arp_config locally (send_command is fire-and-forget)
                     vnic_config["_proxy_arp_config"] = {

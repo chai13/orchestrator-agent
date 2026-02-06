@@ -460,7 +460,6 @@ class DHCPManager:
         vnic_name: str,
         mac_address: str,
         container_pid: int,
-        use_client_id: bool = False,
     ) -> Dict[str, Any]:
         """Start a DHCP client for a container's MACVLAN vNIC.
 
@@ -472,7 +471,6 @@ class DHCPManager:
             vnic_name: Name of the virtual NIC
             mac_address: MAC address of the interface (used for MACVLAN lookup)
             container_pid: PID of the container's init process (provided by orchestrator-agent)
-            use_client_id: Deprecated, kept for API compatibility (ignored)
         """
         key = f"{container_name}:{vnic_name}"
 

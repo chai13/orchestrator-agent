@@ -100,98 +100,6 @@ def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
     return True, ""
 
 
-def _request_proxy_arp_dhcp(
-    container_name: str,
-    vnic_name: str,
-    parent_interface: str,
-    container_pid: int,
-) -> dict:
-    """
-    Request DHCP for a WiFi vNIC using Proxy ARP method.
-
-    This runs udhcpc on the host's WiFi interface with a unique client-id
-    to obtain an IP address for the container. The IP is then used to
-    configure the Proxy ARP bridge.
-
-    Args:
-        container_name: Name of the container
-        vnic_name: Name of the vNIC
-        parent_interface: WiFi interface (e.g., "wlan0")
-        container_pid: PID of the container
-
-    Returns:
-        Dict with success, ip_address, gateway, subnet_mask on success
-        Dict with success=False and error on failure
-    """
-    import subprocess
-    import json
-
-    # Generate unique client-id for DHCP
-    client_id_str = f"{container_name}:{vnic_name}"
-    client_id_hex = client_id_str.encode('utf-8').hex()
-
-    log_info(f"Requesting DHCP for Proxy ARP: interface={parent_interface}, client_id={client_id_str}")
-
-    try:
-        # Use a custom script to capture DHCP lease info
-        # We run udhcpc in one-shot mode (-n) and capture the assigned IP
-        # The -O option requests specific options, -q quits after obtaining lease
-        result = subprocess.run(
-            [
-                "udhcpc",
-                "-i", parent_interface,
-                "-f",  # foreground
-                "-n",  # exit if no lease
-                "-q",  # quit after obtaining lease
-                "-t", "5",  # try 5 times
-                "-T", "3",  # 3 second timeout
-                "-x", f"0x3d:{client_id_hex}",  # Client-ID (option 61)
-                "-s", "/bin/true",  # dummy script (we parse output)
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        # udhcpc doesn't directly output the IP in a parseable way when using -s /bin/true
-        # We need to use a different approach: run udhcpc and let it configure, then read the IP
-
-        # Alternative: Use ip addr to get the IP that was assigned
-        # First, let udhcpc run normally to configure the interface
-        # But this would change the host's IP which we don't want
-
-        # Better approach: Run DHCP discover/request manually and parse response
-        # For now, use a simpler approach - run udhcpc and capture via environment
-
-        # Actually, the cleanest approach is to have netmon handle this
-        # Let's delegate to netmon which already has DHCP infrastructure
-
-        # For the initial implementation, we'll use a simpler method:
-        # Parse the DHCP lease file or use dhclient which has better output
-
-        # Fallback: Use the interface cache to get subnet info and let DHCP server assign
-        from tools.interface_cache import get_interface_network
-        subnet, gateway = get_interface_network(parent_interface)
-
-        if not subnet or not gateway:
-            return {
-                "success": False,
-                "error": f"Could not detect network info for {parent_interface}"
-            }
-
-        # For now, we'll request DHCP through netmon's existing infrastructure
-        # This is a synchronous placeholder - the actual DHCP will be handled async
-        return {
-            "success": False,
-            "error": "Proxy ARP DHCP not yet fully implemented - use static IP for WiFi vNICs"
-        }
-
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "DHCP request timed out"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
 def _create_runtime_container_sync(container_name: str, vnic_configs: list, serial_configs: list = None, runtime_version: str = None):
     """
     Synchronous implementation of runtime container creation.
@@ -482,8 +390,7 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
                     "MacAddress"
                 )
                 if container_pid > 0:
-                    # MACVLAN uses MAC address for DHCP identification
-                    dhcp_vnics.append((vnic_name, mac_address, container_pid, False))
+                    dhcp_vnics.append((vnic_name, mac_address, container_pid))
                     log_debug(
                         f"Will request DHCP for vNIC {vnic_name} (MAC: {mac_address}, PID: {container_pid})"
                     )
@@ -539,10 +446,10 @@ async def create_runtime_container(container_name: str, vnic_configs: list, seri
     # Start DHCP for MACVLAN vNICs (Ethernet)
     if dhcp_vnics:
         set_step(container_name, "starting_dhcp")
-        for vnic_name, mac_address, container_pid, use_client_id in dhcp_vnics:
+        for vnic_name, mac_address, container_pid in dhcp_vnics:
             try:
                 await network_event_listener.start_dhcp(
-                    container_name, vnic_name, mac_address, container_pid, use_client_id
+                    container_name, vnic_name, mac_address, container_pid
                 )
                 log_info(f"Requested DHCP for MACVLAN vNIC {vnic_name} (MAC: {mac_address})")
             except Exception as e:
