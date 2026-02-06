@@ -1047,17 +1047,20 @@ class NetworkEventListener:
                 ip_address = ip_address.split("/")[0]
                 log_info(f"Reconfiguring static Proxy ARP for {container_name}:{vnic_name}")
                 try:
-                    result = await self.setup_proxy_arp_bridge(
+                    await self.setup_proxy_arp_bridge(
                         container_name, container_pid, interface,
                         ip_address, new_gateway, "255.255.255.0"
                     )
-                    if result.get("success"):
-                        bridge_config = result.get("proxy_arp_config", {})
-                        vnic_config["_proxy_arp_config"] = bridge_config
-                        save_vnic_configs(container_name, [vnic_config])
-                        log_info(f"WiFi vNIC {vnic_name} reconfigured with gateway {new_gateway}")
-                    else:
-                        log_error(f"Failed to reconfigure static Proxy ARP: {result.get('error')}")
+                    # Build proxy_arp_config locally (send_command is fire-and-forget)
+                    vnic_config["_proxy_arp_config"] = {
+                        "veth_host": f"veth-{container_name[:8]}",
+                        "veth_container": "eth1",
+                        "ip_address": ip_address,
+                        "gateway": new_gateway,
+                        "parent_interface": interface,
+                    }
+                    save_vnic_configs(container_name, [vnic_config])
+                    log_info(f"WiFi vNIC {vnic_name} reconfigured with gateway {new_gateway}")
                 except Exception as e:
                     log_error(f"Failed to reconfigure static Proxy ARP: {e}")
             else:

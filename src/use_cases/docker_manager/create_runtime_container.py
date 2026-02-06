@@ -569,15 +569,21 @@ async def create_runtime_container(container_name: str, vnic_configs: list, seri
                     if ip_address and gateway:
                         ip_address = ip_address.split("/")[0]
                         log_info(f"Setting up Proxy ARP Bridge for WiFi vNIC {vnic_name} (static IP) via netmon")
-                        result = await network_event_listener.setup_proxy_arp_bridge(
+                        await network_event_listener.setup_proxy_arp_bridge(
                             container_name, container_pid, parent_interface,
                             ip_address, gateway, subnet,
                         )
-                        if result.get("success"):
-                            vnic_config["_proxy_arp_config"] = result.get("proxy_arp_config", {})
-                            log_info(f"vNIC {vnic_name} on {parent_interface} (Proxy ARP/Static): IP={ip_address}")
-                        else:
-                            log_error(f"Failed to set up static Proxy ARP for {vnic_name}: {result.get('error')}")
+                        # Build proxy_arp_config locally (send_command is fire-and-forget,
+                        # so the response from netmon is not received here).
+                        # The naming convention is deterministic: veth-{name[:8]}
+                        vnic_config["_proxy_arp_config"] = {
+                            "veth_host": f"veth-{container_name[:8]}",
+                            "veth_container": "eth1",
+                            "ip_address": ip_address,
+                            "gateway": gateway,
+                            "parent_interface": parent_interface,
+                        }
+                        log_info(f"vNIC {vnic_name} on {parent_interface} (Proxy ARP/Static): IP={ip_address}")
                     else:
                         log_error(f"Static IP mode requires ip and gateway for WiFi vNIC {vnic_name}")
                 else:
