@@ -13,6 +13,7 @@ RUN apt-get update && \
         udhcpc \
         procps \
     && rm -rf /var/lib/apt/lists/* && \
+    update-alternatives --set iptables /usr/sbin/iptables-legacy && \
     pip install --no-cache-dir pyroute2 pyudev
 
 WORKDIR /app

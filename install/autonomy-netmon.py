@@ -241,15 +241,20 @@ def setup_proxy_arp_bridge(
         # 9. Add iptables FORWARD rules
         # Docker sets FORWARD policy to DROP and only allows its own bridge traffic.
         # We need explicit rules to allow forwarding between the veth and WiFi interface.
+        # Non-fatal: bridge still functions if iptables fails (e.g., no iptables backend).
         logger.debug(f"Adding iptables FORWARD rules for {veth_host} <-> {parent_interface}")
-        subprocess.run(
-            ["iptables", "-I", "FORWARD", "-i", veth_host, "-o", parent_interface, "-j", "ACCEPT"],
-            check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["iptables", "-I", "FORWARD", "-i", parent_interface, "-o", veth_host, "-j", "ACCEPT"],
-            check=True, capture_output=True,
-        )
+        try:
+            subprocess.run(
+                ["iptables", "-I", "FORWARD", "-i", veth_host, "-o", parent_interface, "-j", "ACCEPT"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["iptables", "-I", "FORWARD", "-i", parent_interface, "-o", veth_host, "-j", "ACCEPT"],
+                check=True, capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.warning(f"Could not add iptables FORWARD rules: {e}. "
+                           "Forwarding may be blocked by Docker's default FORWARD DROP policy.")
 
         logger.info(f"Proxy ARP bridge setup complete for {container_name}")
 
