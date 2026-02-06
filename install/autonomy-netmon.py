@@ -114,6 +114,25 @@ logger = logging.getLogger(__name__)
 # ========== Proxy ARP Bridge Functions ==========
 
 
+def _write_sysctl(key: str, value: str):
+    """Write a sysctl value, trying /proc/sys first then sysctl command."""
+    proc_path = "/proc/sys/" + key.replace(".", "/")
+    try:
+        with open(proc_path, "w") as f:
+            f.write(value)
+        return
+    except (OSError, IOError):
+        pass
+    # Fallback to sysctl command
+    try:
+        subprocess.run(
+            ["sysctl", "-w", f"{key}={value}"],
+            check=True, capture_output=True,
+        )
+    except Exception as e:
+        logger.warning(f"Could not set sysctl {key}={value}: {e}")
+
+
 def netmask_to_cidr(netmask: str) -> int:
     """Convert a netmask (e.g., 255.255.255.0) to CIDR prefix length (e.g., 24)."""
     return sum(bin(int(octet)).count("1") for octet in netmask.split("."))
@@ -196,26 +215,14 @@ def setup_proxy_arp_bridge(
         subprocess.run(["ip", "link", "set", veth_host, "up"], check=True, capture_output=True)
 
         # Enable proxy_arp on the veth interface
-        try:
-            with open(f"/proc/sys/net/ipv4/conf/{veth_host}/proxy_arp", "w") as f:
-                f.write("1")
-        except Exception as e:
-            logger.warning(f"Could not enable proxy_arp on {veth_host}: {e}")
+        _write_sysctl(f"net.ipv4.conf.{veth_host}.proxy_arp", "1")
 
         # 5. Enable proxy ARP on WiFi interface
         logger.debug(f"Enabling proxy_arp on {parent_interface}")
-        try:
-            with open(f"/proc/sys/net/ipv4/conf/{parent_interface}/proxy_arp", "w") as f:
-                f.write("1")
-        except Exception as e:
-            logger.warning(f"Could not enable proxy_arp on {parent_interface}: {e}")
+        _write_sysctl(f"net.ipv4.conf.{parent_interface}.proxy_arp", "1")
 
         # 6. Enable IP forwarding
-        try:
-            with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
-                f.write("1")
-        except Exception as e:
-            logger.warning(f"Could not enable ip_forward: {e}")
+        _write_sysctl("net.ipv4.ip_forward", "1")
 
         # 7. Add route to container IP via veth
         logger.debug(f"Adding route: {ip_address}/32 dev {veth_host}")
