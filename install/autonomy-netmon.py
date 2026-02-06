@@ -111,6 +111,259 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ========== Proxy ARP Bridge Functions ==========
+
+
+def netmask_to_cidr(netmask: str) -> int:
+    """Convert a netmask (e.g., 255.255.255.0) to CIDR prefix length (e.g., 24)."""
+    return sum(bin(int(octet)).count("1") for octet in netmask.split("."))
+
+
+def setup_proxy_arp_bridge(
+    container_name: str,
+    container_pid: int,
+    parent_interface: str,
+    ip_address: str,
+    gateway: str,
+    subnet_mask: str = "255.255.255.0",
+) -> dict:
+    """
+    Set up Proxy ARP bridge for a container on a WiFi interface.
+
+    Creates a veth pair, configures routing, and enables proxy ARP
+    so the container can be reached on the WiFi network.
+
+    Args:
+        container_name: Name of the container
+        container_pid: PID of container's init process
+        parent_interface: WiFi interface (e.g., "wlan0")
+        ip_address: IP address for container (from DHCP or static)
+        gateway: Gateway address
+        subnet_mask: Subnet mask (default 255.255.255.0)
+
+    Returns:
+        dict with veth names and configuration details
+    """
+    short_id = container_name[:8]
+    veth_host = f"veth-{short_id}"
+    veth_container = "eth1"
+
+    logger.info(
+        f"Setting up Proxy ARP bridge for {container_name}: "
+        f"IP={ip_address}, interface={parent_interface}"
+    )
+
+    try:
+        # 1. Create veth pair
+        logger.debug(f"Creating veth pair: {veth_host} <-> {veth_container}")
+        subprocess.run(
+            ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_container],
+            check=True, capture_output=True,
+        )
+
+        # 2. Move one end to container's network namespace
+        logger.debug(f"Moving {veth_container} to container netns (PID {container_pid})")
+        subprocess.run(
+            ["ip", "link", "set", veth_container, "netns", str(container_pid)],
+            check=True, capture_output=True,
+        )
+
+        # 3. Configure container's interface with IP
+        prefix_len = netmask_to_cidr(subnet_mask)
+
+        subprocess.run(
+            ["nsenter", "-t", str(container_pid), "-n",
+             "ip", "addr", "add", f"{ip_address}/{prefix_len}", "dev", veth_container],
+            check=True, capture_output=True,
+        )
+
+        subprocess.run(
+            ["nsenter", "-t", str(container_pid), "-n",
+             "ip", "link", "set", veth_container, "up"],
+            check=True, capture_output=True,
+        )
+
+        # Add default route in container pointing to gateway
+        logger.debug(f"Adding default route via {gateway} in container")
+        subprocess.run(
+            ["nsenter", "-t", str(container_pid), "-n",
+             "ip", "route", "add", "default", "via", gateway, "dev", veth_container],
+            check=True, capture_output=True,
+        )
+
+        # 4. Configure host's end of veth
+        logger.debug(f"Bringing up {veth_host} on host")
+        subprocess.run(["ip", "link", "set", veth_host, "up"], check=True, capture_output=True)
+
+        # Enable proxy_arp on the veth interface
+        try:
+            with open(f"/proc/sys/net/ipv4/conf/{veth_host}/proxy_arp", "w") as f:
+                f.write("1")
+        except Exception as e:
+            logger.warning(f"Could not enable proxy_arp on {veth_host}: {e}")
+
+        # 5. Enable proxy ARP on WiFi interface
+        logger.debug(f"Enabling proxy_arp on {parent_interface}")
+        try:
+            with open(f"/proc/sys/net/ipv4/conf/{parent_interface}/proxy_arp", "w") as f:
+                f.write("1")
+        except Exception as e:
+            logger.warning(f"Could not enable proxy_arp on {parent_interface}: {e}")
+
+        # 6. Enable IP forwarding
+        try:
+            with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
+                f.write("1")
+        except Exception as e:
+            logger.warning(f"Could not enable ip_forward: {e}")
+
+        # 7. Add route to container IP via veth
+        logger.debug(f"Adding route: {ip_address}/32 dev {veth_host}")
+        subprocess.run(
+            ["ip", "route", "add", f"{ip_address}/32", "dev", veth_host],
+            check=True, capture_output=True,
+        )
+
+        # 8. Add proxy ARP entry
+        logger.debug(f"Adding proxy ARP entry for {ip_address} on {parent_interface}")
+        subprocess.run(
+            ["ip", "neighbor", "add", "proxy", ip_address, "dev", parent_interface],
+            check=True, capture_output=True,
+        )
+
+        logger.info(f"Proxy ARP bridge setup complete for {container_name}")
+
+        return {
+            "veth_host": veth_host,
+            "veth_container": veth_container,
+            "ip_address": ip_address,
+            "gateway": gateway,
+            "parent_interface": parent_interface,
+        }
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to set up Proxy ARP bridge for {container_name}: {e}")
+        logger.error(f"Command output: {e.stderr.decode() if e.stderr else 'N/A'}")
+        cleanup_proxy_arp_bridge(container_name, ip_address, parent_interface, veth_host)
+        raise RuntimeError(f"Proxy ARP bridge setup failed: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error setting up Proxy ARP bridge: {e}")
+        cleanup_proxy_arp_bridge(container_name, ip_address, parent_interface, veth_host)
+        raise
+
+
+def cleanup_proxy_arp_bridge(
+    container_name: str,
+    ip_address: str,
+    parent_interface: str,
+    veth_host: str,
+) -> None:
+    """
+    Clean up Proxy ARP bridge configuration for a container.
+
+    Removes proxy ARP neighbor entry, route, and veth pair.
+    """
+    logger.info(f"Cleaning up Proxy ARP bridge for {container_name}")
+
+    if ip_address and parent_interface:
+        try:
+            subprocess.run(
+                ["ip", "neighbor", "del", "proxy", ip_address, "dev", parent_interface],
+                check=False, capture_output=True,
+            )
+            logger.debug(f"Removed proxy ARP entry for {ip_address}")
+        except Exception as e:
+            logger.debug(f"Could not remove proxy ARP entry: {e}")
+
+    if ip_address and veth_host:
+        try:
+            subprocess.run(
+                ["ip", "route", "del", f"{ip_address}/32", "dev", veth_host],
+                check=False, capture_output=True,
+            )
+            logger.debug(f"Removed route for {ip_address}")
+        except Exception as e:
+            logger.debug(f"Could not remove route: {e}")
+
+    if veth_host:
+        try:
+            subprocess.run(
+                ["ip", "link", "del", veth_host],
+                check=False, capture_output=True,
+            )
+            logger.debug(f"Removed veth pair {veth_host}")
+        except Exception as e:
+            logger.debug(f"Could not remove veth pair: {e}")
+
+    logger.info(f"Proxy ARP bridge cleanup complete for {container_name}")
+
+
+def cleanup_all_proxy_arp() -> dict:
+    """
+    Clean up all Proxy ARP veth interfaces and their associated proxy ARP entries.
+
+    Finds all veth-* interfaces on the host and removes them along with
+    any proxy neighbor entries. Used during selfdestruct for bulk cleanup.
+
+    Returns:
+        dict with success status and count of removed interfaces
+    """
+    logger.info("Cleaning up all Proxy ARP veth interfaces...")
+
+    try:
+        result = subprocess.run(
+            ["ip", "-o", "link", "show"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+        veths_removed = 0
+        for line in result.stdout.split("\n"):
+            parts = line.split(":")
+            if len(parts) >= 2:
+                iface_name = parts[1].strip().split("@")[0]
+                if iface_name.startswith("veth-"):
+                    logger.info(f"Removing Proxy ARP veth: {iface_name}")
+                    try:
+                        subprocess.run(
+                            ["ip", "link", "del", iface_name],
+                            check=False, capture_output=True, timeout=5,
+                        )
+                        veths_removed += 1
+                    except Exception as e:
+                        logger.warning(f"Could not remove veth {iface_name}: {e}")
+
+        # Also clean up any proxy ARP neighbor entries
+        try:
+            neigh_result = subprocess.run(
+                ["ip", "neighbor", "show", "proxy"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in neigh_result.stdout.strip().split("\n"):
+                if line.strip():
+                    # Format: "IP dev INTERFACE"
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        ip_addr = parts[0]
+                        dev_iface = parts[2]
+                        try:
+                            subprocess.run(
+                                ["ip", "neighbor", "del", "proxy", ip_addr, "dev", dev_iface],
+                                check=False, capture_output=True, timeout=5,
+                            )
+                            logger.debug(f"Removed proxy ARP entry: {ip_addr} dev {dev_iface}")
+                        except Exception as e:
+                            logger.debug(f"Could not remove proxy entry: {e}")
+        except Exception as e:
+            logger.warning(f"Error cleaning proxy ARP entries: {e}")
+
+        logger.info(f"Proxy ARP cleanup complete: {veths_removed} veths removed")
+        return {"success": True, "veths_removed": veths_removed}
+
+    except Exception as e:
+        logger.warning(f"Error during Proxy ARP cleanup: {e}")
+        return {"success": False, "error": str(e)}
+
+
 class DHCPManager:
     """Manages DHCP clients for runtime containers."""
 
@@ -346,12 +599,13 @@ class DHCPManager:
             client_id_hex = client_id.encode("utf-8").hex()
 
             # Run udhcpc on the host's WiFi interface (NOT inside container netns)
+            # Uses wifi.script which only writes lease files (never touches the interface)
             # The -x option sets DHCP option 61 (Client Identifier)
             cmd = [
                 "udhcpc",
                 "-f",  # foreground
                 "-i", parent_interface,  # WiFi interface on host
-                "-s", "/usr/share/udhcpc/default.script",
+                "-s", "/usr/share/udhcpc/wifi.script",
                 "-t", "5",  # retries
                 "-T", "3",  # timeout
                 "-x", f"0x3d:{client_id_hex}",  # Client Identifier (option 61)
@@ -412,21 +666,66 @@ class DHCPManager:
                                 f"DHCP lease update for {key}: IP={current_ip}"
                             )
 
+                            # For WiFi Proxy ARP leases, set up the bridge automatically
+                            proxy_arp_config = None
+                            if state.get("is_wifi_proxy_arp"):
+                                container_pid = state.get("pid")
+                                parent_iface = state.get("interface")
+                                gateway = lease_data.get("router")
+                                mask = lease_data.get("mask", "255.255.255.0")
+
+                                if container_pid and parent_iface and gateway:
+                                    # Clean up old bridge if IP changed
+                                    old_config = state.get("_proxy_arp_config")
+                                    if old_config:
+                                        try:
+                                            cleanup_proxy_arp_bridge(
+                                                state["container_name"],
+                                                old_config.get("ip_address"),
+                                                old_config.get("parent_interface"),
+                                                old_config.get("veth_host"),
+                                            )
+                                        except Exception as e:
+                                            logger.warning(f"Error cleaning old proxy ARP: {e}")
+
+                                    try:
+                                        proxy_arp_config = setup_proxy_arp_bridge(
+                                            state["container_name"],
+                                            container_pid,
+                                            parent_iface,
+                                            current_ip,
+                                            gateway,
+                                            mask,
+                                        )
+                                        state["_proxy_arp_config"] = proxy_arp_config
+                                        logger.info(f"Proxy ARP bridge set up for {key} with IP {current_ip}")
+                                    except Exception as e:
+                                        logger.error(f"Failed to set up Proxy ARP bridge for {key}: {e}")
+                                else:
+                                    logger.warning(
+                                        f"Cannot set up Proxy ARP for {key}: "
+                                        f"pid={container_pid}, iface={parent_iface}, gw={gateway}"
+                                    )
+
                             # Send dhcp_update event to orchestrator
+                            event_data = {
+                                "container_name": state["container_name"],
+                                "vnic_name": state["vnic_name"],
+                                "mac_address": state["mac_address"],
+                                "ip": current_ip,
+                                "mask": lease_data.get("mask"),
+                                "prefix": lease_data.get("prefix"),
+                                "gateway": lease_data.get("router"),
+                                "dns": lease_data.get("dns"),
+                                "lease_time": lease_data.get("lease"),
+                                "timestamp": lease_data.get("timestamp"),
+                            }
+                            if proxy_arp_config:
+                                event_data["proxy_arp_config"] = proxy_arp_config
+
                             event = {
                                 "type": "dhcp_update",
-                                "data": {
-                                    "container_name": state["container_name"],
-                                    "vnic_name": state["vnic_name"],
-                                    "mac_address": state["mac_address"],
-                                    "ip": current_ip,
-                                    "mask": lease_data.get("mask"),
-                                    "prefix": lease_data.get("prefix"),
-                                    "gateway": lease_data.get("router"),
-                                    "dns": lease_data.get("dns"),
-                                    "lease_time": lease_data.get("lease"),
-                                    "timestamp": lease_data.get("timestamp"),
-                                },
+                                "data": event_data,
                             }
                             self.send_event(event)
 
@@ -1475,6 +1774,47 @@ class NetworkMonitor:
                     "pending_changes": list(self.pending_changes),
                 }
             }
+
+        elif cmd_type == "setup_proxy_arp_bridge":
+            container_name = command.get("container_name")
+            container_pid = command.get("container_pid")
+            parent_interface = command.get("parent_interface")
+            ip_address = command.get("ip_address")
+            gateway = command.get("gateway")
+            subnet_mask = command.get("subnet_mask", "255.255.255.0")
+
+            if not all([container_name, container_pid, parent_interface, ip_address, gateway]):
+                return {"success": False, "error": "Missing required parameters for Proxy ARP setup"}
+
+            try:
+                container_pid = int(container_pid)
+                config = setup_proxy_arp_bridge(
+                    container_name, container_pid, parent_interface,
+                    ip_address, gateway, subnet_mask,
+                )
+                return {"success": True, "proxy_arp_config": config}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        elif cmd_type == "cleanup_proxy_arp_bridge":
+            container_name = command.get("container_name")
+            ip_address = command.get("ip_address")
+            parent_interface = command.get("parent_interface")
+            veth_host = command.get("veth_host")
+
+            if not container_name:
+                return {"success": False, "error": "Missing container_name"}
+
+            try:
+                cleanup_proxy_arp_bridge(
+                    container_name, ip_address, parent_interface, veth_host,
+                )
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        elif cmd_type == "cleanup_all_proxy_arp":
+            return cleanup_all_proxy_arp()
 
         else:
             return {"success": False, "error": f"Unknown command: {cmd_type}"}

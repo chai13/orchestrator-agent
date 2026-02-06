@@ -1,11 +1,13 @@
 from . import CLIENTS, get_self_container
 from tools.logger import log_info, log_warning, log_error
-from tools.docker_tools import CLIENT, cleanup_proxy_arp_bridge
+from tools.docker_tools import CLIENT
 from tools.vnic_persistence import delete_vnic_configs, load_vnic_configs
 from tools.devices_usage_buffer import get_devices_usage_buffer
 from tools.operations_state import set_deleting, set_step, set_error
 import docker
+import json
 import re
+import socket
 
 NETMON_CONTAINER_NAME = "autonomy_netmon"
 SHARED_VOLUME_NAME = "orchestrator-shared"
@@ -35,27 +37,9 @@ def _delete_runtime_container_for_selfdestruct(container_name: str):
     """
     log_info(f"Deleting runtime container: {container_name}")
 
-    # Clean up Proxy ARP bridges before deleting container (WiFi vNICs)
-    # This must be done before container removal to ensure routes are properly cleaned
-    try:
-        all_vnic_configs = load_vnic_configs()
-        vnic_configs = all_vnic_configs.get(container_name, [])
-        for vnic_config in vnic_configs:
-            proxy_arp_config = vnic_config.get("_proxy_arp_config")
-            if proxy_arp_config:
-                ip_address = proxy_arp_config.get("ip_address")
-                parent_interface = proxy_arp_config.get("parent_interface")
-                veth_host = proxy_arp_config.get("veth_host")
-                if ip_address and parent_interface and veth_host:
-                    log_info(f"Cleaning up Proxy ARP bridge for vNIC {vnic_config.get('name')}")
-                    try:
-                        cleanup_proxy_arp_bridge(
-                            container_name, ip_address, parent_interface, veth_host
-                        )
-                    except Exception as e:
-                        log_warning(f"Error cleaning up Proxy ARP bridge: {e}")
-    except Exception as e:
-        log_warning(f"Error loading vNIC configs for Proxy ARP cleanup: {e}")
+    # Note: Per-container Proxy ARP cleanup is skipped here.
+    # Veth pairs auto-cleanup when containers are deleted (kernel behavior).
+    # Proxy ARP neighbor entries are cleaned in bulk via _cleanup_proxy_arp_veths().
 
     try:
         container = CLIENT.containers.get(container_name)
@@ -126,52 +110,49 @@ def _delete_all_runtime_containers():
 
 def _cleanup_proxy_arp_veths():
     """
-    Clean up any orphaned Proxy ARP veth interfaces.
+    Clean up all Proxy ARP veth interfaces and neighbor entries via netmon.
 
-    These are veth interfaces created for WiFi containers that may be left behind
-    if containers were forcefully removed without proper cleanup.
-
-    Pattern: veth-{container_short_id}
+    Sends a cleanup_all_proxy_arp command to netmon via a direct synchronous
+    socket write. Netmon has host network access and can run ip commands.
 
     This is a best-effort cleanup that does NOT raise on failure.
     """
-    import subprocess
+    NETMON_SOCKET_PATH = "/var/orchestrator/netmon.sock"
 
-    log_info("Cleaning up orphaned Proxy ARP veth interfaces...")
+    log_info("Requesting Proxy ARP cleanup from netmon...")
 
     try:
-        # List all network interfaces
-        result = subprocess.run(
-            ["ip", "-o", "link", "show"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect(NETMON_SOCKET_PATH)
 
-        veths_removed = 0
-        for line in result.stdout.split("\n"):
-            # Parse interface name from ip link output
-            # Format: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> ..."
-            parts = line.split(":")
-            if len(parts) >= 2:
-                iface_name = parts[1].strip().split("@")[0]  # Handle veth@veth format
-                if iface_name.startswith("veth-"):
-                    log_info(f"Removing orphaned Proxy ARP veth: {iface_name}")
-                    try:
-                        subprocess.run(
-                            ["ip", "link", "del", iface_name],
-                            check=False,
-                            capture_output=True,
-                            timeout=5,
-                        )
-                        veths_removed += 1
-                    except Exception as e:
-                        log_warning(f"Could not remove veth {iface_name}: {e}")
+        command = json.dumps({"command": "cleanup_all_proxy_arp"}) + "\n"
+        sock.sendall(command.encode("utf-8"))
 
-        log_info(f"Proxy ARP veth cleanup complete: {veths_removed} removed")
+        # Read response
+        response_data = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response_data += chunk
+            if b"\n" in response_data:
+                break
+
+        sock.close()
+
+        if response_data:
+            response = json.loads(response_data.decode("utf-8").strip())
+            if response.get("success"):
+                veths_removed = response.get("veths_removed", 0)
+                log_info(f"Proxy ARP cleanup via netmon complete: {veths_removed} veths removed")
+            else:
+                log_warning(f"Proxy ARP cleanup via netmon failed: {response.get('error')}")
+        else:
+            log_warning("No response from netmon for Proxy ARP cleanup")
 
     except Exception as e:
-        log_warning(f"Error during Proxy ARP veth cleanup: {e}")
+        log_warning(f"Error requesting Proxy ARP cleanup from netmon: {e}")
 
 
 def _cleanup_orchestrator_networks():

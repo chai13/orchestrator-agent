@@ -17,7 +17,8 @@ WORKDIR /app
 
 COPY autonomy-netmon.py /app/autonomy-netmon.py
 COPY udhcpc-script.sh /usr/share/udhcpc/default.script
-RUN chmod +x /usr/share/udhcpc/default.script
+COPY udhcpc-wifi.sh /usr/share/udhcpc/wifi.script
+RUN chmod +x /usr/share/udhcpc/default.script /usr/share/udhcpc/wifi.script
 
 ENV PYTHONUNBUFFERED=1
 

@@ -8,8 +8,6 @@ from tools.docker_tools import (
     get_or_create_macvlan_network,
     create_internal_network,
     get_macvlan_network_key,
-    setup_proxy_arp_bridge,
-    cleanup_proxy_arp_bridge,
 )
 from tools.interface_cache import get_interface_type
 from tools.devices_usage_buffer import get_devices_usage_buffer
@@ -442,48 +440,19 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
                     f"vNIC {vnic_name} on {parent_interface} (MACVLAN): IP={vnic_ip}, MAC={vnic_mac}"
                 )
 
-        # Collect WiFi vNICs info for Proxy ARP setup (done in async wrapper)
-        # Static IP WiFi vNICs can be configured here synchronously
+        # Collect WiFi vNICs info for Proxy ARP setup (done in async wrapper via netmon)
+        # Both static and DHCP WiFi vNICs are handled asynchronously since
+        # proxy ARP operations must go through netmon (which has host network access)
         wifi_vnics_to_configure = []
         for vnic_config in wifi_vnics:
             vnic_name = vnic_config.get("name")
             parent_interface = vnic_config.get("parent_interface")
-            network_mode = vnic_config.get("network_mode", "dhcp")
-
-            if network_mode == "static":
-                # Static IP mode - can configure synchronously
-                ip_address = vnic_config.get("ip")
-                gateway = vnic_config.get("gateway")
-                subnet = vnic_config.get("subnet", "255.255.255.0")
-
-                if ip_address and gateway:
-                    ip_address = ip_address.split("/")[0]  # Remove CIDR if present
-                    try:
-                        log_info(f"Setting up Proxy ARP Bridge for WiFi vNIC {vnic_name} (static IP)")
-                        bridge_config = setup_proxy_arp_bridge(
-                            container_name,
-                            container_pid,
-                            parent_interface,
-                            ip_address,
-                            gateway,
-                            subnet,
-                        )
-                        vnic_config["_proxy_arp_config"] = bridge_config
-                        log_info(
-                            f"vNIC {vnic_name} on {parent_interface} (Proxy ARP/Static): IP={ip_address}"
-                        )
-                    except Exception as e:
-                        log_error(f"Failed to set up static Proxy ARP for WiFi vNIC {vnic_name}: {e}")
-                else:
-                    log_error(f"Static IP mode requires ip and gateway for WiFi vNIC {vnic_name}")
-            else:
-                # DHCP mode - collect for async configuration
-                wifi_vnics_to_configure.append({
-                    "vnic_name": vnic_name,
-                    "parent_interface": parent_interface,
-                    "container_pid": container_pid,
-                    "vnic_config": vnic_config,
-                })
+            wifi_vnics_to_configure.append({
+                "vnic_name": vnic_name,
+                "parent_interface": parent_interface,
+                "container_pid": container_pid,
+                "vnic_config": vnic_config,
+            })
 
         save_vnic_configs(container_name, vnic_configs)
 
@@ -579,8 +548,8 @@ async def create_runtime_container(container_name: str, vnic_configs: list, seri
             except Exception as e:
                 log_warning(f"Failed to request DHCP for vNIC {vnic_name}: {e}")
 
-    # Configure WiFi vNICs with Proxy ARP Bridge (DHCP mode)
-    # This requires async DHCP request through the host's WiFi interface
+    # Configure WiFi vNICs with Proxy ARP Bridge via netmon
+    # All proxy ARP operations go through netmon (which has host network + PID access)
     if wifi_vnics_to_configure:
         set_step(container_name, "configuring_wifi_vnics")
         for wifi_info in wifi_vnics_to_configure:
@@ -588,39 +557,43 @@ async def create_runtime_container(container_name: str, vnic_configs: list, seri
             parent_interface = wifi_info["parent_interface"]
             container_pid = wifi_info["container_pid"]
             vnic_config = wifi_info["vnic_config"]
+            network_mode = vnic_config.get("network_mode", "dhcp")
 
             try:
-                # Request DHCP for WiFi vNIC using Proxy ARP method
-                # This obtains an IP from the WiFi network's DHCP server
-                log_info(f"Requesting DHCP for WiFi vNIC {vnic_name} via Proxy ARP")
-                dhcp_result = await network_event_listener.request_wifi_dhcp(
-                    container_name, vnic_name, parent_interface, container_pid
-                )
+                if network_mode == "static":
+                    # Static IP - send setup command to netmon
+                    ip_address = vnic_config.get("ip")
+                    gateway = vnic_config.get("gateway")
+                    subnet = vnic_config.get("subnet", "255.255.255.0")
 
-                if dhcp_result and dhcp_result.get("success"):
-                    ip_address = dhcp_result.get("ip_address")
-                    gateway = dhcp_result.get("gateway")
-                    subnet_mask = dhcp_result.get("subnet_mask", "255.255.255.0")
-
-                    # Set up Proxy ARP bridge with the obtained IP
-                    bridge_config = await asyncio.to_thread(
-                        setup_proxy_arp_bridge,
-                        container_name,
-                        container_pid,
-                        parent_interface,
-                        ip_address,
-                        gateway,
-                        subnet_mask,
-                    )
-                    vnic_config["_proxy_arp_config"] = bridge_config
-                    log_info(f"WiFi vNIC {vnic_name} configured with IP {ip_address}")
+                    if ip_address and gateway:
+                        ip_address = ip_address.split("/")[0]
+                        log_info(f"Setting up Proxy ARP Bridge for WiFi vNIC {vnic_name} (static IP) via netmon")
+                        result = await network_event_listener.setup_proxy_arp_bridge(
+                            container_name, container_pid, parent_interface,
+                            ip_address, gateway, subnet,
+                        )
+                        if result.get("success"):
+                            vnic_config["_proxy_arp_config"] = result.get("proxy_arp_config", {})
+                            log_info(f"vNIC {vnic_name} on {parent_interface} (Proxy ARP/Static): IP={ip_address}")
+                        else:
+                            log_error(f"Failed to set up static Proxy ARP for {vnic_name}: {result.get('error')}")
+                    else:
+                        log_error(f"Static IP mode requires ip and gateway for WiFi vNIC {vnic_name}")
                 else:
-                    error_msg = dhcp_result.get("error", "Unknown error") if dhcp_result else "No response"
-                    log_warning(f"Failed to obtain DHCP for WiFi vNIC {vnic_name}: {error_msg}")
+                    # DHCP mode - just request DHCP, netmon handles bridge setup
+                    # when the lease arrives via its lease monitor
+                    log_info(f"Requesting DHCP for WiFi vNIC {vnic_name} via Proxy ARP")
+                    result = await network_event_listener.request_wifi_dhcp(
+                        container_name, vnic_name, parent_interface, container_pid
+                    )
+                    if not result.get("success"):
+                        log_warning(f"WiFi DHCP request failed for {vnic_name}: {result.get('error')}")
+                    # Proxy ARP config will be saved via _handle_dhcp_update when IP arrives
             except Exception as e:
                 log_warning(f"Failed to configure WiFi vNIC {vnic_name}: {e}")
 
-        # Save updated vnic_configs with Proxy ARP configuration
+        # Save updated vnic_configs (static WiFi vNICs have proxy_arp_config now)
         save_vnic_configs(container_name, updated_vnic_configs)
 
     # Trigger serial device sync for the newly created container

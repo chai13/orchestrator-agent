@@ -298,6 +298,11 @@ class NetworkEventListener:
                     vnic_config["dhcp_ip"] = ip
                     vnic_config["dhcp_gateway"] = data.get("gateway")
                     vnic_config["dhcp_dns"] = data.get("dns")
+                    # Save proxy ARP config if present (sent by netmon after auto-bridging)
+                    proxy_arp_config = data.get("proxy_arp_config")
+                    if proxy_arp_config:
+                        vnic_config["_proxy_arp_config"] = proxy_arp_config
+                        log_info(f"Saved Proxy ARP config for {key}: {proxy_arp_config}")
                     break
             save_vnic_configs(container_name, vnic_configs)
             log_debug(f"Updated vNIC config with DHCP IP for {key}")
@@ -413,6 +418,61 @@ class NetworkEventListener:
         # For now, return the command send status
         # The caller should wait for the dhcp_update callback or poll dhcp_ip_cache
         return result
+
+    async def setup_proxy_arp_bridge(
+        self,
+        container_name: str,
+        container_pid: int,
+        parent_interface: str,
+        ip_address: str,
+        gateway: str,
+        subnet_mask: str = "255.255.255.0",
+    ) -> dict:
+        """
+        Request netmon to set up a Proxy ARP bridge for a container.
+
+        Netmon has host network access and can run ip/nsenter commands.
+        """
+        command = {
+            "command": "setup_proxy_arp_bridge",
+            "container_name": container_name,
+            "container_pid": container_pid,
+            "parent_interface": parent_interface,
+            "ip_address": ip_address,
+            "gateway": gateway,
+            "subnet_mask": subnet_mask,
+        }
+        log_info(f"Requesting Proxy ARP bridge setup for {container_name} via netmon")
+        return await self.send_command(command)
+
+    async def cleanup_proxy_arp_bridge(
+        self,
+        container_name: str,
+        ip_address: str = None,
+        parent_interface: str = None,
+        veth_host: str = None,
+    ) -> dict:
+        """
+        Request netmon to clean up a Proxy ARP bridge for a container.
+        """
+        command = {
+            "command": "cleanup_proxy_arp_bridge",
+            "container_name": container_name,
+            "ip_address": ip_address,
+            "parent_interface": parent_interface,
+            "veth_host": veth_host,
+        }
+        log_info(f"Requesting Proxy ARP bridge cleanup for {container_name} via netmon")
+        return await self.send_command(command)
+
+    async def cleanup_all_proxy_arp(self) -> dict:
+        """
+        Request netmon to clean up all Proxy ARP veth interfaces and entries.
+        Used during selfdestruct for bulk cleanup.
+        """
+        command = {"command": "cleanup_all_proxy_arp"}
+        log_info("Requesting cleanup of all Proxy ARP interfaces via netmon")
+        return await self.send_command(command)
 
     def get_dhcp_ip(self, container_name: str, vnic_name: str) -> Optional[str]:
         """Get the DHCP-assigned IP for a container's vNIC"""
@@ -809,8 +869,6 @@ class NetworkEventListener:
         For Ethernet (MACVLAN): Reconnect container to new MACVLAN network
         For WiFi (Proxy ARP): Update Proxy ARP bridge configuration with new IP/gateway
         """
-        from tools.docker_tools import setup_proxy_arp_bridge, cleanup_proxy_arp_bridge
-
         try:
             all_vnic_configs = load_vnic_configs()
 
@@ -957,11 +1015,10 @@ class NetworkEventListener:
         """
         Reconnect a WiFi vNIC using Proxy ARP Bridge after network change.
 
-        For static IP: Update the Proxy ARP configuration with new gateway
-        For DHCP: Request new IP via Proxy ARP DHCP and reconfigure bridge
+        For static IP: Send cleanup + setup commands to netmon
+        For DHCP: Send cleanup to netmon, then request new DHCP
+                  (bridge setup happens automatically in netmon when IP arrives)
         """
-        from tools.docker_tools import setup_proxy_arp_bridge, cleanup_proxy_arp_bridge
-
         vnic_name = vnic_config.get("name")
         network_mode = vnic_config.get("network_mode", "dhcp")
         proxy_arp_config = vnic_config.get("_proxy_arp_config", {})
@@ -971,49 +1028,50 @@ class NetworkEventListener:
             log_warning(f"Container {container_name} has invalid PID, cannot reconfigure WiFi vNIC")
             return
 
-        # Clean up old Proxy ARP configuration if it exists
+        # Clean up old Proxy ARP configuration via netmon
         old_ip = proxy_arp_config.get("ip_address")
         old_veth_host = proxy_arp_config.get("veth_host")
         if old_ip and old_veth_host:
             log_info(f"Cleaning up old Proxy ARP config for {container_name}:{vnic_name}")
             try:
-                await asyncio.to_thread(
-                    cleanup_proxy_arp_bridge,
+                await self.cleanup_proxy_arp_bridge(
                     container_name, old_ip, interface, old_veth_host
                 )
             except Exception as e:
                 log_warning(f"Error cleaning up old Proxy ARP config: {e}")
 
         if network_mode == "static":
-            # Static IP - use configured IP with new gateway
+            # Static IP - use configured IP with new gateway via netmon
             ip_address = vnic_config.get("ip")
             if ip_address:
                 ip_address = ip_address.split("/")[0]
                 log_info(f"Reconfiguring static Proxy ARP for {container_name}:{vnic_name}")
                 try:
-                    bridge_config = await asyncio.to_thread(
-                        setup_proxy_arp_bridge,
+                    result = await self.setup_proxy_arp_bridge(
                         container_name, container_pid, interface,
                         ip_address, new_gateway, "255.255.255.0"
                     )
-                    vnic_config["_proxy_arp_config"] = bridge_config
-                    save_vnic_configs(container_name, [vnic_config])
-                    log_info(f"WiFi vNIC {vnic_name} reconfigured with gateway {new_gateway}")
+                    if result.get("success"):
+                        bridge_config = result.get("proxy_arp_config", {})
+                        vnic_config["_proxy_arp_config"] = bridge_config
+                        save_vnic_configs(container_name, [vnic_config])
+                        log_info(f"WiFi vNIC {vnic_name} reconfigured with gateway {new_gateway}")
+                    else:
+                        log_error(f"Failed to reconfigure static Proxy ARP: {result.get('error')}")
                 except Exception as e:
                     log_error(f"Failed to reconfigure static Proxy ARP: {e}")
             else:
                 log_error(f"Static IP mode but no IP configured for {container_name}:{vnic_name}")
         else:
             # DHCP mode - request new IP
+            # Bridge setup happens automatically in netmon when IP arrives via lease monitor
             log_info(f"Requesting new DHCP for WiFi vNIC {container_name}:{vnic_name}")
             try:
-                # Request DHCP via netmon
                 result = await self.request_wifi_dhcp(
                     container_name, vnic_name, interface, container_pid
                 )
                 if not result.get("success"):
                     log_warning(f"WiFi DHCP request failed: {result.get('error')}")
-                # The actual IP will arrive via dhcp_update event and trigger bridge setup
             except Exception as e:
                 log_warning(f"Failed to request WiFi DHCP: {e}")
 
