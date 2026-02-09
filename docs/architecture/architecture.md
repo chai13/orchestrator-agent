@@ -57,7 +57,8 @@ The main agent container that orchestrates runtime containers and communicates w
 - `src/index.py` - Entry point with reconnection loop
 - `src/controllers/websocket_controller/` - WebSocket client and topic handlers
 - `src/use_cases/docker_manager/` - Container and network management
-- `src/use_cases/network_monitor/` - Network event listener and interface cache
+- `src/tools/network_event_listener.py` - Network event listener and reconnection
+- `src/tools/interface_cache.py` - Interface information cache
 
 ### autonomy-netmon Sidecar
 
