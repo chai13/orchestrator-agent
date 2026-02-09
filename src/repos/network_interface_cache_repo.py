@@ -5,9 +5,11 @@ from tools.interface_cache import (
     get_interface_network,
 )
 
+from repos.interfaces import NetworkInterfaceCacheRepoInterface
 
-class DictNetworkInterfaceCache:
-    """Concrete adapter wrapping the in-memory INTERFACE_CACHE dict.
+
+class NetworkInterfaceCacheRepo(NetworkInterfaceCacheRepoInterface):
+    """Concrete repo wrapping the in-memory INTERFACE_CACHE dict.
 
     Holds a reference to the live mutable INTERFACE_CACHE so that existing
     code that writes to it directly (network_event_listener) continues to work.

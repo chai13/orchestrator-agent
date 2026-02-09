@@ -1,7 +1,7 @@
 from typing import Protocol, Optional, Callable, List
 
 
-class NetworkCommanderRepo(Protocol):
+class NetworkCommanderRepoInterface(Protocol):
     """Abstract interface for communication with the network monitor sidecar."""
 
     async def send_command(self, command: dict) -> dict: ...

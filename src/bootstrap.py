@@ -1,31 +1,31 @@
 """
-Composition root: creates and wires all adapters at startup.
+Composition root: creates and wires all repos at startup.
 
-This module provides a centralized AppContext that holds all adapter instances,
+This module provides a centralized AppContext that holds all repo instances,
 enabling dependency injection throughout the application. Use get_context() to
 access the singleton context.
 """
 
-from adapters import (
-    DockerContainerRuntime,
-    FileVnicRepository,
-    FileSerialRepository,
-    FileClientRegistry,
-    RequestsHttpClient,
-    DictNetworkInterfaceCache,
+from repos import (
+    ContainerRuntimeRepo,
+    VNICRepo,
+    SerialRepo,
+    ClientRepo,
+    HTTPClientRepo,
+    NetworkInterfaceCacheRepo,
 )
 
 
 class AppContext:
-    """Holds all instantiated adapters for dependency injection."""
+    """Holds all instantiated repos for dependency injection."""
 
     def __init__(self):
-        self.container_runtime = DockerContainerRuntime()
-        self.vnic_repo = FileVnicRepository()
-        self.serial_repo = FileSerialRepository()
-        self.client_registry = FileClientRegistry()
-        self.http_client = RequestsHttpClient()
-        self.network_interface_cache = DictNetworkInterfaceCache()
+        self.container_runtime = ContainerRuntimeRepo()
+        self.vnic_repo = VNICRepo()
+        self.serial_repo = SerialRepo()
+        self.client_registry = ClientRepo()
+        self.http_client = HTTPClientRepo()
+        self.network_interface_cache = NetworkInterfaceCacheRepo()
 
 
 _context = None
