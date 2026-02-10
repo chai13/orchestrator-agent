@@ -6,7 +6,7 @@
     "mounts": [
         "source=${env:HOME}/.ssh,target=/home/dev/.ssh,type=bind",
         "source=${env:HOME}/.mtls,target=/home/dev/.mtls,type=bind",
-        "source=/var/orchestrator,target=/var/orchestrator,type=bind"
+        "source=orchestrator-shared,target=/var/orchestrator,type=volume"
     ],
     "features": {
         "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
@@ -23,6 +23,9 @@
                 "mahatolalit.readme-previewer"
             ]
         }
+    },
+    "containerEnv": {
+        "HOST_NAME": "orchestrator-agent-devcontainer"
     },
     "forwardPorts": [22, 7676],
     "postCreateCommand": "",
