@@ -348,7 +348,7 @@ def _create_runtime_container_sync(
         log_info(f"Container {container_name} created and started successfully")
 
         try:
-            main_container = get_self_container()
+            main_container = get_self_container(container_runtime=container_runtime)
             if main_container:
                 try:
                     internal_network.connect(main_container)

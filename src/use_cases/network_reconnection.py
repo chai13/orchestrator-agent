@@ -130,7 +130,8 @@ class NetworkReconnectionManager:
 
         # Create or get new MACVLAN network
         new_network = self.container_runtime.get_or_create_macvlan_network(
-            interface, new_subnet, new_gateway
+            interface, new_subnet, new_gateway,
+            interface_cache=self.interface_cache,
         )
 
         network_mode = vnic_config.get("network_mode", "dhcp")

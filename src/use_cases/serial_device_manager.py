@@ -343,7 +343,7 @@ class SerialDeviceManager:
                 )
 
                 if success:
-                    serial_repo.update_status(
+                    self.serial_repo.update_status(
                         container_name,
                         port_name,
                         "connected",
@@ -353,12 +353,12 @@ class SerialDeviceManager:
                     )
                     log_info(f"Serial device resynced for {container_name}:{port_name}")
                 else:
-                    serial_repo.update_status(container_name, port_name, "error")
+                    self.serial_repo.update_status(container_name, port_name, "error")
                     log_error(f"Failed to resync serial device for {container_name}:{port_name}")
 
             for stale_container in stale_containers:
                 log_info(f"Cleaning up stale serial config for deleted container {stale_container}")
-                serial_repo.delete_configs(stale_container)
+                self.serial_repo.delete_configs(stale_container)
 
             log_info("Serial device resync completed")
 
