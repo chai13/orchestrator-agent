@@ -3,10 +3,6 @@ import json
 import os
 from typing import Optional, Callable, List
 from tools.logger import log_info, log_debug, log_warning, log_error
-from tools.netmon_client import NetmonClient
-from use_cases.dhcp_manager import DHCPManager
-from use_cases.network_reconnection import NetworkReconnectionManager
-from use_cases.serial_device_manager import SerialDeviceManager
 
 SOCKET_PATH = "/var/orchestrator/netmon.sock"
 DEBOUNCE_SECONDS = 3
@@ -24,7 +20,9 @@ class NetworkEventListener:
     - SerialDeviceManager: serial device matching and provisioning
     """
 
-    def __init__(self, interface_cache=None):
+    def __init__(self, interface_cache=None, netmon_client=None,
+                 dhcp_manager=None, reconnection_manager=None,
+                 serial_device_manager=None):
         self.socket_path = SOCKET_PATH
         self.running = False
         self.listener_task = None
@@ -32,11 +30,11 @@ class NetworkEventListener:
         self.last_event_time = {}
         self.interface_cache = interface_cache
 
-        # Sub-managers
-        self.netmon_client = NetmonClient()
-        self.dhcp_manager = DHCPManager(self.netmon_client)
-        self.reconnection_manager = NetworkReconnectionManager(self.netmon_client)
-        self.serial_device_manager = SerialDeviceManager()
+        # Sub-managers (injected by composition root)
+        self.netmon_client = netmon_client
+        self.dhcp_manager = dhcp_manager
+        self.reconnection_manager = reconnection_manager
+        self.serial_device_manager = serial_device_manager
 
     # ========== Lifecycle ==========
 

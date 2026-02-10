@@ -1,8 +1,8 @@
 import os
-import json
 from typing import Optional, Dict
 
 from repos.interfaces import ClientRepoInterface
+from tools.json_file import read_json_file, write_json_file
 
 CLIENTS_FILE = os.getenv("CLIENTS_FILE", "/var/orchestrator/data/clients.json")
 
@@ -15,23 +15,10 @@ class ClientRepo(ClientRepoInterface):
 
     def __init__(self, clients_file: str = CLIENTS_FILE):
         self._clients_file = clients_file
-        self._clients = self._load_from_file()
-
-    def _load_from_file(self) -> dict:
-        if not os.path.exists(self._clients_file):
-            return {}
-        with open(self._clients_file, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
+        self._clients = read_json_file(self._clients_file)
 
     def _write_to_file(self) -> None:
-        dir_name = os.path.dirname(self._clients_file)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
-        with open(self._clients_file, "w") as f:
-            json.dump(self._clients, f, indent=4)
+        write_json_file(self._clients_file, self._clients, indent=4)
 
     def add_client(self, name: str, ip: str) -> None:
         self._clients[name] = {"ip": ip, "name": name}

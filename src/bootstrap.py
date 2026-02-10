@@ -17,7 +17,11 @@ from repos import (
 from tools.operations_state import OperationsStateTracker
 from tools.devices_usage_buffer import DevicesUsageBuffer
 from tools.network_event_listener import NetworkEventListener
+from tools.netmon_client import NetmonClient
 from tools.logger import log_info
+from use_cases.dhcp_manager import DHCPManager
+from use_cases.network_reconnection import NetworkReconnectionManager
+from use_cases.serial_device_manager import SerialDeviceManager
 
 
 class AppContext:
@@ -32,8 +36,16 @@ class AppContext:
         self.network_interface_cache = NetworkInterfaceCacheRepo()
         self.operations_state = OperationsStateTracker()
         self.devices_usage_buffer = DevicesUsageBuffer()
+        self.netmon_client = NetmonClient()
+        self.dhcp_manager = DHCPManager(self.netmon_client)
+        self.reconnection_manager = NetworkReconnectionManager(self.netmon_client)
+        self.serial_device_manager = SerialDeviceManager()
         self.network_event_listener = NetworkEventListener(
             interface_cache=self.network_interface_cache,
+            netmon_client=self.netmon_client,
+            dhcp_manager=self.dhcp_manager,
+            reconnection_manager=self.reconnection_manager,
+            serial_device_manager=self.serial_device_manager,
         )
 
         # Register existing clients for usage data collection at bootstrap time
