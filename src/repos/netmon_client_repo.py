@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Callable
 from tools.logger import log_info, log_debug, log_error, log_warning
 
 
-class NetmonClient:
+class NetmonClientRepo:
     """
     Handles Unix socket communication with the netmon sidecar.
 

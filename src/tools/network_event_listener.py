@@ -14,7 +14,7 @@ class NetworkEventListener:
 
     Owns the socket connection lifecycle and event routing. All domain logic
     is delegated to:
-    - NetmonClient: netmon socket communication and command sending
+    - NetmonClientRepo: netmon socket communication and command sending
     - DHCPManager: DHCP resync, retry, and IP cache management
     - NetworkReconnectionManager: container reconnection on network changes
     - SerialDeviceManager: serial device matching and provisioning
