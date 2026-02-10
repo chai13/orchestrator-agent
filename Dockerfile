@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     python3-dev \
+    libsrtp2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=shim-builder /shim-wheels /shim-wheels
