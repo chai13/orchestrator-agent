@@ -40,7 +40,7 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         client = await get_websocket_client(dns_ttl=dns_ttl)
 
         # Initialize WebSocket controller (existing topics)
-        init_websocket_controller(client)
+        init_websocket_controller(client, ctx)
 
         # Initialize WebRTC controller (signaling topics)
         session_manager = WebRTCSessionManager()

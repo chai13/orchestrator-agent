@@ -13,10 +13,10 @@ from .receivers.get_serial_devices import init as init_get_serial_devices
 from .receivers.run_command import init as init_run_command
 
 
-def initialize_all(client):
+def initialize_all(client, ctx):
 
     # Initialize all topic receivers
-    init_connect(client)
+    init_connect(client, ctx)
     init_create_new_runtime(client)
     init_run_command(client)
     init_disconnect(client)
