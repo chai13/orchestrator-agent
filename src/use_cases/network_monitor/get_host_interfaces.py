@@ -1,5 +1,4 @@
 from tools.logger import log_debug, log_info, log_warning, log_error
-from bootstrap import get_context
 from typing import Dict, Any, List
 
 VIRTUAL_INTERFACE_PREFIXES = [
@@ -82,7 +81,7 @@ def build_interface_info_from_cache(
 
 
 def get_host_interfaces_data(
-    include_virtual: bool = False, detailed: bool = True, *, interface_cache=None
+    include_virtual: bool = False, detailed: bool = True, *, interface_cache
 ) -> Dict[str, Any]:
     """
     Get network interfaces on the host from the interface cache.
@@ -105,10 +104,6 @@ def get_host_interfaces_data(
         - interfaces: List of interface information (on success)
         - error: Error message (on error)
     """
-    if interface_cache is None:
-
-        interface_cache = get_context().network_interface_cache
-
     log_debug(
         f"Retrieving host network interfaces from interface cache "
         f"(include_virtual={include_virtual}, detailed={detailed})"

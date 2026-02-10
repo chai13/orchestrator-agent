@@ -3,9 +3,6 @@ import os
 from typing import Dict, List, Optional, Callable
 from tools.logger import log_info, log_debug, log_warning, log_error
 from tools.utils import matches_device_id
-from bootstrap import get_context
-
-
 class SerialDeviceManager:
     """
     Manages serial device matching and provisioning for runtime containers.
@@ -14,7 +11,9 @@ class SerialDeviceManager:
     inside containers, and tracks currently available serial devices.
     """
 
-    def __init__(self):
+    def __init__(self, serial_repo, container_runtime):
+        self.serial_repo = serial_repo
+        self.container_runtime = container_runtime
         # Serial device cache: by_id -> device_info
         self.device_cache: Dict[str, Dict] = {}
         # Callbacks for serial device status changes
@@ -48,8 +47,6 @@ class SerialDeviceManager:
 
         Called when a USB serial device is plugged in or unplugged.
         """
-
-        serial_repo = get_context().serial_repo
 
         action = data.get("action")
         device = data.get("device", {})
@@ -89,7 +86,7 @@ class SerialDeviceManager:
                 )
 
                 if success:
-                    serial_repo.update_status(
+                    self.serial_repo.update_status(
                         container_name,
                         port_name,
                         "connected",
@@ -125,7 +122,7 @@ class SerialDeviceManager:
 
                 log_info(f"Device disconnected for {container_name}:{port_name}")
 
-                serial_repo.update_status(container_name, port_name, "disconnected")
+                self.serial_repo.update_status(container_name, port_name, "disconnected")
 
                 await self._notify_device_callbacks(
                     container_name, port_name, "disconnected", device
@@ -138,8 +135,6 @@ class SerialDeviceManager:
         Matches by device_id (the stable /dev/serial/by-id/ identifier).
         """
 
-        serial_repo = get_context().serial_repo
-
         by_id = device.get("by_id")
         if not by_id:
             device_path = device.get("path")
@@ -150,7 +145,7 @@ class SerialDeviceManager:
 
             log_debug(f"No by_id for device {device_path}, falling back to path-based matching")
             matches = []
-            all_configs = serial_repo.load_configs()
+            all_configs = self.serial_repo.load_configs()
 
             for container_name, container_config in all_configs.items():
                 for port_config in container_config.get("serial_ports", []):
@@ -163,7 +158,7 @@ class SerialDeviceManager:
 
             return matches
 
-        return serial_repo.get_by_device_id(by_id)
+        return self.serial_repo.get_by_device_id(by_id)
 
     async def _create_device_node(
         self,
@@ -180,8 +175,6 @@ class SerialDeviceManager:
         the container.
         """
 
-        container_runtime = get_context().container_runtime
-
         try:
             if major is None or minor is None:
                 try:
@@ -193,11 +186,11 @@ class SerialDeviceManager:
                     return False
 
             try:
-                container = container_runtime.get_container(container_name)
+                container = self.container_runtime.get_container(container_name)
                 if container.status != "running":
                     log_warning(f"Container {container_name} is not running, cannot create device node")
                     return False
-            except container_runtime.NotFoundError:
+            except self.container_runtime.NotFoundError:
                 log_error(f"Container {container_name} not found")
                 return False
 
@@ -243,15 +236,13 @@ class SerialDeviceManager:
     async def _remove_device_node(self, container_name: str, container_path: str) -> bool:
         """Remove a device node from inside a container."""
 
-        container_runtime = get_context().container_runtime
-
         try:
             try:
-                container = container_runtime.get_container(container_name)
+                container = self.container_runtime.get_container(container_name)
                 if container.status != "running":
                     log_debug(f"Container {container_name} is not running, skipping device node removal")
                     return True
-            except container_runtime.NotFoundError:
+            except self.container_runtime.NotFoundError:
                 log_debug(f"Container {container_name} not found, skipping device node removal")
                 return True
 
@@ -290,12 +281,8 @@ class SerialDeviceManager:
         configured serial devices available (if the devices are currently connected).
         """
 
-        ctx = get_context()
-        container_runtime = ctx.container_runtime
-        serial_repo = ctx.serial_repo
-
         try:
-            all_configured = serial_repo.get_all_configured_ports()
+            all_configured = self.serial_repo.get_all_configured_ports()
             if not all_configured:
                 log_debug("No serial port configurations found, skipping resync")
                 return
@@ -316,11 +303,11 @@ class SerialDeviceManager:
                     continue
 
                 try:
-                    container = container_runtime.get_container(container_name)
+                    container = self.container_runtime.get_container(container_name)
                     if container.status != "running":
                         log_debug(f"Container {container_name} is not running, skipping serial resync")
                         continue
-                except container_runtime.NotFoundError:
+                except self.container_runtime.NotFoundError:
                     log_debug(f"Container {container_name} no longer exists, marking for cleanup")
                     stale_containers.add(container_name)
                     continue
@@ -335,7 +322,7 @@ class SerialDeviceManager:
                     log_debug(
                         f"Device {device_id} not currently connected for {container_name}:{port_name}"
                     )
-                    serial_repo.update_status(container_name, port_name, "disconnected")
+                    self.serial_repo.update_status(container_name, port_name, "disconnected")
                     continue
 
                 device_path = matching_device.get("path")

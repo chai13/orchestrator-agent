@@ -1,8 +1,7 @@
 import base64
-from bootstrap import get_context
 
 
-def execute(instance, command, *, http_client=None):
+def execute(instance, command, *, http_client):
     """
     Execute an HTTP command on a runtime instance.
 
@@ -15,14 +14,11 @@ def execute(instance, command, *, http_client=None):
             - headers (optional): HTTP headers
             - data (optional): Request body data
             - params (optional): Query parameters
-        http_client: Optional HTTPClientRepo adapter (defaults to singleton)
+        http_client: HTTPClientRepo adapter
 
     Returns:
         Dictionary with status_code, headers, body, ok, and content_type
     """
-    if http_client is None:
-
-        http_client = get_context().http_client
     method = command.get("method")
     api = command.get("api")
     port = command.get("port", 8443)  # Default to 8443 for openplc-runtime
@@ -79,22 +75,19 @@ def execute(instance, command, *, http_client=None):
     return http_client.make_request(method, ip, port, api, content)
 
 
-def execute_for_device(device_id, message, *, client_registry=None, http_client=None):
+def execute_for_device(device_id, message, *, client_registry, http_client):
     """
     Look up a device and execute an HTTP command on it.
 
     Args:
         device_id: Target runtime container identifier
         message: Dict containing method, api, port, headers, data, params, files
-        client_registry: Optional ClientRepo (defaults to singleton)
-        http_client: Optional HTTPClientRepo (defaults to singleton)
+        client_registry: ClientRepo adapter
+        http_client: HTTPClientRepo adapter
 
     Returns:
         Dict with status and http_response, or status and error
     """
-    if client_registry is None:
-        client_registry = get_context().client_registry
-
     instance = client_registry.get_client(device_id)
     if not instance:
         return {"status": "error", "error": f"Device not found: {device_id}"}

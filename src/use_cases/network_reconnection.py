@@ -1,8 +1,5 @@
 from typing import Optional
 from tools.logger import log_info, log_debug, log_warning, log_error
-from bootstrap import get_context
-
-
 class NetworkReconnectionManager:
     """
     Handles container reconnection after host network changes.
@@ -11,8 +8,11 @@ class NetworkReconnectionManager:
     For WiFi (Proxy ARP): Updates Proxy ARP bridge configuration with new IP/gateway.
     """
 
-    def __init__(self, netmon_client):
+    def __init__(self, netmon_client, container_runtime, vnic_repo, interface_cache):
         self.netmon_client = netmon_client
+        self.container_runtime = container_runtime
+        self.vnic_repo = vnic_repo
+        self.interface_cache = interface_cache
 
     async def reconnect_containers(self, interface: str, iface_data: dict):
         """
@@ -22,13 +22,8 @@ class NetworkReconnectionManager:
         For WiFi (Proxy ARP): Update Proxy ARP bridge configuration with new IP/gateway
         """
 
-        ctx = get_context()
-        container_runtime = ctx.container_runtime
-        vnic_repo = ctx.vnic_repo
-        interface_cache = ctx.network_interface_cache
-
         try:
-            all_vnic_configs = vnic_repo.load_configs()
+            all_vnic_configs = self.vnic_repo.load_configs()
 
             if not all_vnic_configs:
                 log_debug("No runtime containers with vNIC configurations found")
@@ -46,7 +41,7 @@ class NetworkReconnectionManager:
                 log_warning(f"No subnet found for interface {interface}")
                 return
 
-            interface_type = interface_cache.get_interface_type(interface)
+            interface_type = self.interface_cache.get_interface_type(interface)
             is_wifi = interface_type == "wifi"
 
             log_info(
@@ -66,23 +61,21 @@ class NetworkReconnectionManager:
                         )
 
                         try:
-                            container = container_runtime.get_container(container_name)
+                            container = self.container_runtime.get_container(container_name)
                             container.reload()
 
                             if is_wifi:
                                 await self._reconnect_wifi_vnic(
                                     container, container_name, vnic_config,
                                     interface, new_subnet, new_gateway,
-                                    container_runtime,
                                 )
                             else:
                                 await self._reconnect_macvlan_vnic(
                                     container, container_name, vnic_config,
                                     interface, new_subnet, new_gateway,
-                                    container_runtime,
                                 )
 
-                        except container_runtime.NotFoundError:
+                        except self.container_runtime.NotFoundError:
                             log_warning(
                                 f"Container {container_name} not found, may have been deleted. "
                                 f"Consider cleaning up vNIC configs."
@@ -103,7 +96,6 @@ class NetworkReconnectionManager:
         interface: str,
         new_subnet: str,
         new_gateway: str,
-        container_runtime,
     ):
         """Reconnect a MACVLAN vNIC to new network after subnet change."""
         vnic_name = vnic_config.get("name")
@@ -112,7 +104,7 @@ class NetworkReconnectionManager:
         # Check if already on correct subnet
         for net_name in list(container_networks.keys()):
             if net_name.startswith(f"macvlan_{interface}"):
-                current_subnet = self._get_network_subnet(net_name, container_runtime)
+                current_subnet = self._get_network_subnet(net_name, self.container_runtime)
                 if current_subnet == new_subnet:
                     log_info(
                         f"Container {container_name} already connected to "
@@ -130,14 +122,14 @@ class NetworkReconnectionManager:
         for net_name in list(container_networks.keys()):
             if net_name.startswith(f"macvlan_{interface}"):
                 try:
-                    old_network = container_runtime.get_network(net_name)
+                    old_network = self.container_runtime.get_network(net_name)
                     old_network.disconnect(container, force=True)
                     log_info(f"Disconnected {container_name} from old network {net_name}")
                 except Exception as e:
                     log_debug(f"Could not disconnect from old network {net_name}: {e}")
 
         # Create or get new MACVLAN network
-        new_network = container_runtime.get_or_create_macvlan_network(
+        new_network = self.container_runtime.get_or_create_macvlan_network(
             interface, new_subnet, new_gateway
         )
 
@@ -171,7 +163,6 @@ class NetworkReconnectionManager:
         interface: str,
         new_subnet: str,
         new_gateway: str,
-        container_runtime,
     ):
         """
         Reconnect a WiFi vNIC using Proxy ARP Bridge after network change.
@@ -180,8 +171,6 @@ class NetworkReconnectionManager:
         For DHCP: Send cleanup to netmon, then request new DHCP
                   (bridge setup happens automatically in netmon when IP arrives)
         """
-
-        vnic_repo = get_context().vnic_repo
 
         vnic_name = vnic_config.get("name")
         network_mode = vnic_config.get("network_mode", "dhcp")
@@ -221,12 +210,12 @@ class NetworkReconnectionManager:
                         "gateway": new_gateway,
                         "parent_interface": interface,
                     }
-                    all_configs = vnic_repo.load_configs(container_name)
+                    all_configs = self.vnic_repo.load_configs(container_name)
                     for idx, cfg in enumerate(all_configs):
                         if cfg.get("name") == vnic_name and cfg.get("parent_interface") == interface:
                             all_configs[idx] = vnic_config
                             break
-                    vnic_repo.save_configs(container_name, all_configs)
+                    self.vnic_repo.save_configs(container_name, all_configs)
                     log_info(f"WiFi vNIC {vnic_name} reconfigured with gateway {new_gateway}")
                 except Exception as e:
                     log_error(f"Failed to reconfigure static Proxy ARP: {e}")

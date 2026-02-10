@@ -9,7 +9,7 @@ MESSAGE_TYPE = {**BASE_MESSAGE, "cpuPeriod": StringType, "memoryPeriod": StringT
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'get_consumption_orchestrator' topic to send consumption data.
     """
@@ -22,6 +22,9 @@ def init(client):
         result = get_consumption_orchestrator_data(
             message.get("cpuPeriod", "1h"),
             message.get("memoryPeriod", "1h"),
+            static_system_info=ctx.static_system_info,
+            usage_buffer=ctx.usage_buffer,
+            network_interface_cache=ctx.network_interface_cache,
         )
 
         log_debug(

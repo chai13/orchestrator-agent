@@ -1,8 +1,5 @@
-from bootstrap import get_context
-
-
-def get_serial_devices_data():
-    devices = get_context().network_event_listener.get_available_devices()
+def get_serial_devices_data(*, network_event_listener):
+    devices = network_event_listener.get_available_devices()
 
     formatted_devices = []
     for device in devices:

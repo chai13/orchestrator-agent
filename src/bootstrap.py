@@ -40,9 +40,11 @@ class AppContext:
         self.usage_buffer = UsageBuffer()
         self.devices_usage_buffer = DevicesUsageBuffer()
         self.netmon_client = NetmonClientRepo()
-        self.dhcp_manager = DHCPManager(self.netmon_client)
-        self.reconnection_manager = NetworkReconnectionManager(self.netmon_client)
-        self.serial_device_manager = SerialDeviceManager()
+        self.dhcp_manager = DHCPManager(self.netmon_client, self.container_runtime, self.vnic_repo)
+        self.reconnection_manager = NetworkReconnectionManager(
+            self.netmon_client, self.container_runtime, self.vnic_repo, self.network_interface_cache
+        )
+        self.serial_device_manager = SerialDeviceManager(self.serial_repo, self.container_runtime)
         self.network_event_listener = NetworkEventListener(
             interface_cache=self.network_interface_cache,
             netmon_client=self.netmon_client,

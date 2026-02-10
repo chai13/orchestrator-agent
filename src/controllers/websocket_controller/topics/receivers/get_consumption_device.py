@@ -13,7 +13,7 @@ MESSAGE_TYPE = {
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'get_consumption_device' topic to send consumption data.
     """
@@ -28,6 +28,9 @@ def init(client):
             device_id,
             message.get("cpuPeriod", "1h"),
             message.get("memoryPeriod", "1h"),
+            client_registry=ctx.client_registry,
+            devices_usage_buffer=ctx.devices_usage_buffer,
+            container_runtime=ctx.container_runtime,
         )
 
         log_debug(

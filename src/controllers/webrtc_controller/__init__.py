@@ -11,7 +11,7 @@ from .signaling import initialize_signaling
 from .session_manager import WebRTCSessionManager
 
 
-def init(client, session_manager: WebRTCSessionManager, client_registry):
+def init(client, session_manager: WebRTCSessionManager, client_registry, http_client):
     """
     Initialize the WebRTC controller by registering signaling handlers.
 
@@ -19,9 +19,10 @@ def init(client, session_manager: WebRTCSessionManager, client_registry):
         client: Socket.IO client for signaling
         session_manager: WebRTCSessionManager instance
         client_registry: ClientRepo instance for device lookups
+        http_client: HTTPClientRepo instance for command execution
     """
     log_info("Initializing WebRTC Controller...")
-    initialize_signaling(client, session_manager, client_registry)
+    initialize_signaling(client, session_manager, client_registry, http_client)
     log_info("WebRTC Controller initialized successfully.")
 
 

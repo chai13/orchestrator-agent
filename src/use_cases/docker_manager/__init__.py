@@ -1,12 +1,11 @@
 import os
 import socket
-from bootstrap import get_context
 from tools.logger import log_debug, log_warning
 
 HOST_NAME = os.getenv("HOST_NAME", "orchestrator-agent-devcontainer")
 
 
-def get_self_container(*, container_runtime=None):
+def get_self_container(*, container_runtime):
     """
     Detect the orchestrator-agent's own container from inside the container.
 
@@ -21,9 +20,6 @@ def get_self_container(*, container_runtime=None):
 
     Returns the container object or None if not found.
     """
-    if container_runtime is None:
-        container_runtime = get_context().container_runtime
-
     container_id = os.getenv("HOSTNAME")
     if container_id:
         try:

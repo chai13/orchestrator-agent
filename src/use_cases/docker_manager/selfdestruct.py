@@ -1,6 +1,5 @@
 from . import get_self_container
 from tools.logger import log_info, log_warning, log_error
-from bootstrap import get_context
 import json
 import re
 import socket
@@ -22,7 +21,7 @@ MACVLAN_NETWORK_PATTERN = re.compile(r"^macvlan_[a-zA-Z0-9]+_\d+\.\d+\.\d+\.\d+_
 
 
 
-def _delete_runtime_container_for_selfdestruct(container_name, container_runtime, vnic_repo):
+def _delete_runtime_container_for_selfdestruct(container_name, container_runtime, vnic_repo, devices_usage_buffer):
     """
     Delete a single runtime container and its associated resources.
     This is a simplified version of delete_runtime_container for use during self-destruct.
@@ -53,8 +52,7 @@ def _delete_runtime_container_for_selfdestruct(container_name, container_runtime
         raise
 
     try:
-        devices_buffer = get_context().devices_usage_buffer
-        devices_buffer.remove_device(container_name)
+        devices_usage_buffer.remove_device(container_name)
     except Exception as e:
         log_warning(f"Error removing {container_name} from usage buffer: {e}")
 
@@ -85,7 +83,7 @@ def _delete_runtime_container_for_selfdestruct(container_name, container_runtime
         log_warning(f"Error removing internal network {internal_network_name}: {e}")
 
 
-def _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo):
+def _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo, devices_usage_buffer):
     """
     Delete all managed runtime containers.
     Raises exception on failure to stop the self-destruct process.
@@ -99,7 +97,7 @@ def _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo
     log_info(f"Deleting {len(container_names)} runtime container(s): {container_names}")
 
     for container_name in container_names:
-        _delete_runtime_container_for_selfdestruct(container_name, container_runtime, vnic_repo)
+        _delete_runtime_container_for_selfdestruct(container_name, container_runtime, vnic_repo, devices_usage_buffer)
         client_registry.remove_client(container_name)
 
     log_info("All runtime containers deleted successfully")
@@ -285,7 +283,7 @@ def _delete_orchestrator_container(container_runtime):
         raise
 
 
-def start_self_destruct(*, operations_state=None) -> bool:
+def start_self_destruct(*, operations_state) -> bool:
     """
     Initialize the self-destruct operation by setting the tracking state.
 
@@ -293,9 +291,6 @@ def start_self_destruct(*, operations_state=None) -> bool:
         True if self-destruct was started successfully
         False if a self-destruct operation is already in progress
     """
-    if operations_state is None:
-        operations_state = get_context().operations_state
-
     if not operations_state.set_deleting(ORCHESTRATOR_STATUS_ID):
         log_warning("Self-destruct operation already in progress")
         return False
@@ -304,7 +299,7 @@ def start_self_destruct(*, operations_state=None) -> bool:
     return True
 
 
-def self_destruct(*, container_runtime=None, client_registry=None, vnic_repo=None, operations_state=None):
+def self_destruct(*, container_runtime, client_registry, vnic_repo, operations_state, devices_usage_buffer):
     """
     Self-destruct the orchestrator by removing all managed resources.
 
@@ -329,23 +324,11 @@ def self_destruct(*, container_runtime=None, client_registry=None, vnic_repo=Non
         vnic_repo: Optional VNICRepo adapter (defaults to singleton)
         operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo, operations_state]):
-
-        ctx = get_context()
-        if container_runtime is None:
-            container_runtime = ctx.container_runtime
-        if client_registry is None:
-            client_registry = ctx.client_registry
-        if vnic_repo is None:
-            vnic_repo = ctx.vnic_repo
-        if operations_state is None:
-            operations_state = ctx.operations_state
-
     log_info("Self-destructing orchestrator...")
 
     try:
         operations_state.set_step(ORCHESTRATOR_STATUS_ID, "deleting_runtimes")
-        _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo)
+        _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo, devices_usage_buffer)
 
         operations_state.set_step(ORCHESTRATOR_STATUS_ID, "cleaning_networks")
         _cleanup_orchestrator_networks(container_runtime)

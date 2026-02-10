@@ -9,7 +9,7 @@ MESSAGE_TYPE = {**BASE_DEVICE}
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'delete_device' topic to delete a runtime container.
     Deletes the container and all associated resources including networks and configurations.
@@ -32,7 +32,8 @@ def init(client):
                 "error": "Device ID must be a non-empty string",
             }
 
-        result, started = await start_deletion(device_id)
+        result, started = await start_deletion(device_id, ctx=ctx)
+
         result["action"] = NAME
         result["correlation_id"] = correlation_id
         return result

@@ -1,39 +1,10 @@
 from . import get_self_container
 from tools.logger import *
 from tools.network_utils import get_macvlan_network_key
-from bootstrap import get_context
 import asyncio
 import random
 
 
-def _resolve_deps(
-    container_runtime=None,
-    vnic_repo=None,
-    serial_repo=None,
-    client_registry=None,
-    interface_cache=None,
-    network_commander=None,
-    operations_state=None,
-):
-    """Resolve optional dependencies, falling back to bootstrap singletons."""
-    if any(dep is None for dep in [container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, operations_state]):
-
-        ctx = get_context()
-        if container_runtime is None:
-            container_runtime = ctx.container_runtime
-        if vnic_repo is None:
-            vnic_repo = ctx.vnic_repo
-        if serial_repo is None:
-            serial_repo = ctx.serial_repo
-        if client_registry is None:
-            client_registry = ctx.client_registry
-        if interface_cache is None:
-            interface_cache = ctx.network_interface_cache
-        if operations_state is None:
-            operations_state = ctx.operations_state
-    if network_commander is None:
-        network_commander = get_context().network_event_listener
-    return container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, network_commander, operations_state
 
 
 def _generate_mac_address() -> str:
@@ -57,7 +28,7 @@ def _generate_mac_address() -> str:
     return ":".join(f"{octet:02x}" for octet in octets)
 
 
-def _validate_vnic_configs(vnic_configs: list, interface_cache=None) -> tuple[bool, str]:
+def _validate_vnic_configs(vnic_configs: list, *, interface_cache) -> tuple[bool, str]:
     """
     Validate vNIC configurations to detect duplicate networks.
 
@@ -76,9 +47,6 @@ def _validate_vnic_configs(vnic_configs: list, interface_cache=None) -> tuple[bo
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
     """
-    if interface_cache is None:
-        interface_cache = get_context().network_interface_cache
-
     seen_macvlan_networks = {}
     seen_wifi_interfaces = {}
 
@@ -124,7 +92,7 @@ def _validate_vnic_configs(vnic_configs: list, interface_cache=None) -> tuple[bo
     return True, ""
 
 
-def _validate_mac_addresses(vnic_configs: list, container_runtime=None) -> tuple[bool, str]:
+def _validate_mac_addresses(vnic_configs: list, *, container_runtime) -> tuple[bool, str]:
     """
     Validate that user-specified MAC addresses are not already in use on the interface.
 
@@ -138,9 +106,6 @@ def _validate_mac_addresses(vnic_configs: list, container_runtime=None) -> tuple
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
     """
-    if container_runtime is None:
-        container_runtime = get_context().container_runtime
-
     for vnic_config in vnic_configs:
         mac_address = vnic_config.get("mac")
         if mac_address:
@@ -169,12 +134,13 @@ def _create_runtime_container_sync(
     serial_configs: list = None,
     runtime_version: str = None,
     *,
-    container_runtime=None,
-    vnic_repo=None,
-    serial_repo=None,
-    client_registry=None,
-    interface_cache=None,
-    operations_state=None,
+    container_runtime,
+    vnic_repo,
+    serial_repo,
+    client_registry,
+    interface_cache,
+    operations_state,
+    devices_usage_buffer,
 ):
     """
     Synchronous implementation of runtime container creation.
@@ -204,14 +170,6 @@ def _create_runtime_container_sync(
         interface_cache: Optional InterfaceCacheRepo adapter (defaults to singleton)
         operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, _, operations_state = _resolve_deps(
-        container_runtime=container_runtime,
-        vnic_repo=vnic_repo,
-        serial_repo=serial_repo,
-        client_registry=client_registry,
-        interface_cache=interface_cache,
-        operations_state=operations_state,
-    )
     if serial_configs is None:
         serial_configs = []
 
@@ -470,8 +428,7 @@ def _create_runtime_container_sync(
             f"Runtime container {container_name} created successfully with {len(vnic_configs)} virtual NICs"
         )
 
-        devices_buffer = get_context().devices_usage_buffer
-        devices_buffer.add_device(container_name)
+        devices_usage_buffer.add_device(container_name)
         log_debug(f"Registered device {container_name} for usage data collection")
 
         log_debug(f"Container {container_name} has PID {container_pid}")
@@ -515,13 +472,14 @@ async def create_runtime_container(
     serial_configs: list = None,
     runtime_version: str = None,
     *,
-    container_runtime=None,
-    vnic_repo=None,
-    serial_repo=None,
-    client_registry=None,
-    interface_cache=None,
-    network_commander=None,
-    operations_state=None,
+    container_runtime,
+    vnic_repo,
+    serial_repo,
+    client_registry,
+    interface_cache,
+    network_commander,
+    operations_state,
+    devices_usage_buffer,
 ):
     """
     Create a runtime container with MACVLAN or Proxy ARP Bridge networking for
@@ -547,13 +505,6 @@ async def create_runtime_container(
         network_commander: Optional NetworkCommanderRepo adapter (defaults to singleton)
         operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    _, vnic_repo, serial_repo, _, _, network_commander, operations_state = _resolve_deps(
-        vnic_repo=vnic_repo,
-        serial_repo=serial_repo,
-        network_commander=network_commander,
-        operations_state=operations_state,
-    )
-
     result = await asyncio.to_thread(
         _create_runtime_container_sync, container_name, vnic_configs, serial_configs, runtime_version,
         container_runtime=container_runtime,
@@ -562,6 +513,7 @@ async def create_runtime_container(
         client_registry=client_registry,
         interface_cache=interface_cache,
         operations_state=operations_state,
+        devices_usage_buffer=devices_usage_buffer,
     )
 
     if result is None:
@@ -648,7 +600,7 @@ async def create_runtime_container(
             log_warning(f"Failed to resync serial devices for {container_name}: {e}")
 
 
-async def start_creation(container_name, vnic_configs, serial_configs=None, runtime_version=None):
+async def start_creation(container_name, vnic_configs, serial_configs=None, runtime_version=None, *, ctx):
     """
     Validate preconditions and begin container creation as a background task.
 
@@ -656,7 +608,6 @@ async def start_creation(container_name, vnic_configs, serial_configs=None, runt
         Tuple of (status_dict, started: bool). If started=True, creation is running
         as a background task. If started=False, status_dict contains the error.
     """
-    ctx = get_context()
     operations_state = ctx.operations_state
 
     in_progress, operation_type = operations_state.is_operation_in_progress(container_name)
@@ -677,7 +628,17 @@ async def start_creation(container_name, vnic_configs, serial_configs=None, runt
         log_info(f"Container {container_name} will have {len(serial_configs)} serial port(s) configured")
 
     asyncio.create_task(
-        create_runtime_container(container_name, vnic_configs, serial_configs, runtime_version)
+        create_runtime_container(
+            container_name, vnic_configs, serial_configs, runtime_version,
+            container_runtime=ctx.container_runtime,
+            vnic_repo=ctx.vnic_repo,
+            serial_repo=ctx.serial_repo,
+            client_registry=ctx.client_registry,
+            interface_cache=ctx.network_interface_cache,
+            network_commander=ctx.network_event_listener,
+            operations_state=ctx.operations_state,
+            devices_usage_buffer=ctx.devices_usage_buffer,
+        )
     )
 
     return {

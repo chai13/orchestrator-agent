@@ -23,7 +23,7 @@ MESSAGE_TYPE = {
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'run_command' topic to execute HTTP commands on runtime instances.
 
@@ -71,7 +71,11 @@ def init(client):
 
         log_info(f"Received run_command for device {device_id}: {message.get('method')} {message.get('api')}")
 
-        result = await asyncio.to_thread(execute_for_device, device_id, message)
+        result = await asyncio.to_thread(
+            execute_for_device, device_id, message,
+            client_registry=ctx.client_registry,
+            http_client=ctx.http_client,
+        )
 
         if result.get("http_response"):
             log_info(f"Command completed with status {result['http_response'].get('status_code')}")

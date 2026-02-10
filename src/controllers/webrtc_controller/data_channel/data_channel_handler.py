@@ -39,7 +39,7 @@ class DataChannelHandler:
             {"type": "command_response", "correlation_id": 12345, "status": "success", "http_response": {...}}
     """
 
-    def __init__(self, data_channel, session_id: str, session_manager=None, client_registry=None):
+    def __init__(self, data_channel, session_id: str, session_manager=None, client_registry=None, http_client=None):
         """
         Initialize data channel handler.
 
@@ -48,11 +48,13 @@ class DataChannelHandler:
             session_id: Associated WebRTC session ID
             session_manager: WebRTCSessionManager instance (optional)
             client_registry: ClientRepo instance for device lookups
+            http_client: HTTPClientRepo instance for command execution
         """
         self.channel = data_channel
         self.session_id = session_id
         self.session_manager = session_manager
         self.client_registry = client_registry
+        self.http_client = http_client
         self._closed = False
         self._ready = False
         self._ping_task: Optional[asyncio.Task] = None
@@ -187,7 +189,7 @@ class DataChannelHandler:
 
         try:
             result = await asyncio.to_thread(
-                execute_for_device, device_id, message, client_registry=self.client_registry
+                execute_for_device, device_id, message, client_registry=self.client_registry, http_client=self.http_client
             )
 
             if result.get("http_response"):

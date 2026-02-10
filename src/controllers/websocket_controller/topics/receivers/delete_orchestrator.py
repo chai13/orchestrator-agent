@@ -14,7 +14,7 @@ MESSAGE_TYPE = {**BASE_MESSAGE}
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'delete_orchestrator' topic to delete the orchestrator.
 
@@ -41,7 +41,7 @@ def init(client):
         correlation_id = message.get("correlation_id")
         log_warning("Received delete_orchestrator command - initiating self-destruct...")
 
-        if not start_self_destruct():
+        if not start_self_destruct(operations_state=ctx.operations_state):
             log_error("Self-destruct operation already in progress")
             return {
                 "action": NAME,
@@ -60,7 +60,14 @@ def init(client):
             """
             await asyncio.sleep(0.1)
             try:
-                await asyncio.to_thread(self_destruct)
+                await asyncio.to_thread(
+                    self_destruct,
+                    container_runtime=ctx.container_runtime,
+                    client_registry=ctx.client_registry,
+                    vnic_repo=ctx.vnic_repo,
+                    operations_state=ctx.operations_state,
+                    devices_usage_buffer=ctx.devices_usage_buffer,
+                )
             except Exception as e:
                 log_error(f"Self-destruct failed: {e}")
 

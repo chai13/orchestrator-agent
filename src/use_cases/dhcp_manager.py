@@ -3,8 +3,6 @@ import random
 import time
 from typing import Dict, Optional
 from tools.logger import log_info, log_debug, log_warning, log_error
-from bootstrap import get_context
-
 # DHCP retry configuration
 DHCP_RETRY_BACKOFF_BASE = 1.0  # Initial retry delay in seconds
 DHCP_RETRY_BACKOFF_MAX = 300.0  # Max retry delay (5 minutes)
@@ -20,8 +18,10 @@ class DHCPManager:
     with exponential backoff.
     """
 
-    def __init__(self, netmon_client):
+    def __init__(self, netmon_client, container_runtime, vnic_repo):
         self.netmon_client = netmon_client
+        self.container_runtime = container_runtime
+        self.vnic_repo = vnic_repo
         self.running = False
         self.dhcp_retry_task = None
         # Track pending DHCP resyncs: key -> {next_retry_at, retry_count, ...}
@@ -39,8 +39,6 @@ class DHCPManager:
 
     async def handle_dhcp_update(self, data: dict):
         """Handle DHCP IP update from netmon."""
-
-        vnic_repo = get_context().vnic_repo
 
         container_name = data.get("container_name")
         vnic_name = data.get("vnic_name")
@@ -63,7 +61,7 @@ class DHCPManager:
             "mac_address": mac_address,
         }
 
-        all_vnic_configs = vnic_repo.load_configs()
+        all_vnic_configs = self.vnic_repo.load_configs()
         if container_name in all_vnic_configs:
             vnic_configs = all_vnic_configs[container_name]
             for vnic_config in vnic_configs:
@@ -76,7 +74,7 @@ class DHCPManager:
                         vnic_config["_proxy_arp_config"] = proxy_arp_config
                         log_info(f"Saved Proxy ARP config for {key}: {proxy_arp_config}")
                     break
-            vnic_repo.save_configs(container_name, vnic_configs)
+            self.vnic_repo.save_configs(container_name, vnic_configs)
             log_debug(f"Updated vNIC config with DHCP IP for {key}")
 
         for callback in self.netmon_client.dhcp_update_callbacks:
@@ -107,12 +105,8 @@ class DHCPManager:
         but DHCP clients need to be restarted to obtain/renew IP addresses.
         """
 
-        ctx = get_context()
-        container_runtime = ctx.container_runtime
-        vnic_repo = ctx.vnic_repo
-
         try:
-            all_vnic_configs = vnic_repo.load_configs()
+            all_vnic_configs = self.vnic_repo.load_configs()
             if not all_vnic_configs:
                 log_debug("No vNIC configurations found, skipping DHCP resync")
                 return
@@ -129,7 +123,7 @@ class DHCPManager:
                     parent_interface = vnic_config.get("parent_interface")
 
                     try:
-                        container = container_runtime.get_container(container_name)
+                        container = self.container_runtime.get_container(container_name)
                         container.reload()
 
                         if container.status != "running":
@@ -193,7 +187,7 @@ class DHCPManager:
                                 f"Enforcing persisted MAC by reconnecting..."
                             )
                             try:
-                                network = container_runtime.get_network(docker_network_name)
+                                network = self.container_runtime.get_network(docker_network_name)
                                 network.disconnect(container, force=True)
 
                                 connect_kwargs = {"mac_address": persisted_mac}
@@ -277,14 +271,14 @@ class DHCPManager:
                             }
                             log_info(f"Added {key} to pending DHCP resyncs for background retry")
 
-                    except container_runtime.NotFoundError:
+                    except self.container_runtime.NotFoundError:
                         log_debug(f"Container {container_name} not found, skipping DHCP resync")
                     except Exception as e:
                         log_error(f"Error resyncing DHCP for {container_name}:{vnic_name}: {e}")
 
             # Save updated vnic configs with fresh MAC addresses
             for container_name, vnic_configs in all_vnic_configs.items():
-                vnic_repo.save_configs(container_name, vnic_configs)
+                self.vnic_repo.save_configs(container_name, vnic_configs)
 
             log_info("DHCP resync completed")
 
@@ -297,10 +291,6 @@ class DHCPManager:
 
         Runs until all pending resyncs succeed or containers are no longer applicable.
         """
-
-        ctx = get_context()
-        container_runtime = ctx.container_runtime
-        vnic_repo = ctx.vnic_repo
 
         log_info("DHCP retry loop started")
 
@@ -336,7 +326,7 @@ class DHCPManager:
                 log_info(f"DHCP retry attempt {retry_count + 1} for {next_key}")
 
                 try:
-                    container = container_runtime.get_container(container_name)
+                    container = self.container_runtime.get_container(container_name)
                     container.reload()
 
                     if container.status != "running":
@@ -344,7 +334,7 @@ class DHCPManager:
                         self.pending_dhcp_resyncs.pop(next_key, None)
                         continue
 
-                    all_vnic_configs = vnic_repo.load_configs()
+                    all_vnic_configs = self.vnic_repo.load_configs()
                     vnic_configs = all_vnic_configs.get(container_name, [])
                     vnic_config = None
                     for vc in vnic_configs:
@@ -408,7 +398,7 @@ class DHCPManager:
                         log_warning(f"DHCP retry failed for {next_key}: {result.get('error')}")
                         self._schedule_next_retry(next_key, state)
 
-                except container_runtime.NotFoundError:
+                except self.container_runtime.NotFoundError:
                     log_info(f"Container {container_name} not found, removing from pending DHCP resyncs")
                     self.pending_dhcp_resyncs.pop(next_key, None)
                 except Exception as e:

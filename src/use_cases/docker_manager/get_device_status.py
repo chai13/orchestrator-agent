@@ -1,10 +1,9 @@
 from tools.logger import log_debug, log_info, log_warning, log_error
-from bootstrap import get_context
 from datetime import datetime
 from typing import Dict, Any, List
 
 
-def get_serial_port_status(device_id: str, *, serial_repo=None) -> List[Dict[str, Any]]:
+def get_serial_port_status(device_id: str, *, serial_repo) -> List[Dict[str, Any]]:
     """
     Get the status of serial ports configured for a runtime container.
 
@@ -20,10 +19,6 @@ def get_serial_port_status(device_id: str, *, serial_repo=None) -> List[Dict[str
         - status: "connected", "disconnected", or "error"
         - current_host_path: Current /dev/ttyUSBx path (if connected)
     """
-    if serial_repo is None:
-
-        serial_repo = get_context().serial_repo
-
     try:
         serial_config = serial_repo.load_configs(device_id)
         serial_ports = serial_config.get("serial_ports", [])
@@ -50,7 +45,7 @@ def get_serial_port_status(device_id: str, *, serial_repo=None) -> List[Dict[str
         return []
 
 
-def get_device_info(device_id: str, *, container_runtime=None) -> Dict[str, Any]:
+def get_device_info(device_id: str, *, container_runtime) -> Dict[str, Any]:
     """
     Get basic information about a runtime container (CPU, memory limits).
 
@@ -63,10 +58,6 @@ def get_device_info(device_id: str, *, container_runtime=None) -> Dict[str, Any]
         - cpu_count: Number of CPUs available to the container (or "N/A")
         - memory_limit: Memory limit in MB (or "N/A")
     """
-    if container_runtime is None:
-
-        container_runtime = get_context().container_runtime
-
     try:
         container = container_runtime.get_container(device_id)
         container.reload()
@@ -113,11 +104,11 @@ def get_device_info(device_id: str, *, container_runtime=None) -> Dict[str, Any]
 def get_device_status_data(
     device_id: str,
     *,
-    container_runtime=None,
-    client_registry=None,
-    vnic_repo=None,
-    serial_repo=None,
-    operations_state=None,
+    container_runtime,
+    client_registry,
+    vnic_repo,
+    serial_repo,
+    operations_state,
 ) -> Dict[str, Any]:
     """
     Get the current status of a runtime container.
@@ -140,19 +131,6 @@ def get_device_status_data(
         - For non-existent containers: status="not_found"
         - For errors: status="error" with error message
     """
-    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo, serial_repo, operations_state]):
-
-        ctx = get_context()
-        if container_runtime is None:
-            container_runtime = ctx.container_runtime
-        if client_registry is None:
-            client_registry = ctx.client_registry
-        if vnic_repo is None:
-            vnic_repo = ctx.vnic_repo
-        if serial_repo is None:
-            serial_repo = ctx.serial_repo
-        if operations_state is None:
-            operations_state = ctx.operations_state
     if not device_id or not isinstance(device_id, str) or not device_id.strip():
         log_error("Device ID is empty or invalid")
         return {

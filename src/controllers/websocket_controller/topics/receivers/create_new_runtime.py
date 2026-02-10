@@ -32,7 +32,7 @@ MESSAGE_TYPE = {
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'create_new_runtime' topic to create a new runtime environment.
     Creates a runtime container with MACVLAN networking for physical network bridging
@@ -77,7 +77,7 @@ def init(client):
             }
 
         result, started = await start_creation(
-            container_name, vnic_configs, serial_configs, runtime_version
+            container_name, vnic_configs, serial_configs, runtime_version, ctx=ctx
         )
         result["action"] = NAME
         result["correlation_id"] = correlation_id

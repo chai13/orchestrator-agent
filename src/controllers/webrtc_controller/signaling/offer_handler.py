@@ -28,7 +28,7 @@ MESSAGE_CONTRACT = {
 }
 
 
-def init(client, session_manager, client_registry):
+def init(client, session_manager, client_registry, http_client):
     """
     Initialize the WebRTC offer handler.
 
@@ -36,6 +36,7 @@ def init(client, session_manager, client_registry):
         client: Socket.IO client
         session_manager: WebRTCSessionManager instance
         client_registry: ClientRepo instance for device lookups
+        http_client: HTTPClientRepo instance for command execution
     """
     log_info(f"Registering topic: {NAME}")
 
@@ -139,7 +140,7 @@ def init(client, session_manager, client_registry):
                 session_manager.set_data_channel(session_id, channel)
 
                 log_info(f"Creating DataChannelHandler for session {session_id}")
-                handler = DataChannelHandler(channel, session_id, session_manager, client_registry)
+                handler = DataChannelHandler(channel, session_id, session_manager, client_registry, http_client)
                 session_manager.set_channel_handler(session_id, handler)
                 log_info(f"DataChannelHandler created successfully")
 

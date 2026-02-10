@@ -9,7 +9,7 @@ MESSAGE_TYPE = {**BASE_MESSAGE}
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'get_serial_devices' topic to list available serial devices on the host.
     """
@@ -19,7 +19,9 @@ def init(client):
     async def callback(message):
         log_info("Retrieving list of available serial devices")
 
-        result = get_serial_devices_data()
+        result = get_serial_devices_data(
+            network_event_listener=ctx.network_event_listener,
+        )
 
         log_debug(f"Found {result['count']} serial device(s)")
         return {

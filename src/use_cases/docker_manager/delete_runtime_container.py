@@ -1,17 +1,17 @@
 from . import get_self_container
 from tools.logger import *
-from bootstrap import get_context
 import asyncio
 
 
 def _delete_runtime_container_sync(
     container_name: str,
     *,
-    container_runtime=None,
-    client_registry=None,
-    vnic_repo=None,
-    serial_repo=None,
-    operations_state=None,
+    container_runtime,
+    client_registry,
+    vnic_repo,
+    serial_repo,
+    operations_state,
+    devices_usage_buffer,
 ):
     """
     Synchronous implementation of runtime container deletion.
@@ -34,20 +34,6 @@ def _delete_runtime_container_sync(
         serial_repo: Optional SerialRepo adapter (defaults to singleton)
         operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo, serial_repo, operations_state]):
-
-        ctx = get_context()
-        if container_runtime is None:
-            container_runtime = ctx.container_runtime
-        if client_registry is None:
-            client_registry = ctx.client_registry
-        if vnic_repo is None:
-            vnic_repo = ctx.vnic_repo
-        if serial_repo is None:
-            serial_repo = ctx.serial_repo
-        if operations_state is None:
-            operations_state = ctx.operations_state
-
     log_debug(f'Attempting to delete runtime container "{container_name}"')
 
     if not client_registry.contains(container_name):
@@ -79,8 +65,7 @@ def _delete_runtime_container_sync(
             log_warning(f"Error removing {container_name} from client registry: {e}")
 
         try:
-            devices_buffer = get_context().devices_usage_buffer
-            devices_buffer.remove_device(container_name)
+            devices_usage_buffer.remove_device(container_name)
             log_debug(f"Removed {container_name} from usage data collection")
         except Exception as e:
             log_warning(f"Error removing {container_name} from usage buffer: {e}")
@@ -152,12 +137,13 @@ def _delete_runtime_container_sync(
 async def delete_runtime_container(
     container_name: str,
     *,
-    container_runtime=None,
-    client_registry=None,
-    vnic_repo=None,
-    serial_repo=None,
-    network_commander=None,
-    operations_state=None,
+    container_runtime,
+    client_registry,
+    vnic_repo,
+    serial_repo,
+    network_commander,
+    operations_state,
+    devices_usage_buffer,
 ):
     """
     Delete a runtime container and all associated resources.
@@ -174,14 +160,6 @@ async def delete_runtime_container(
         network_commander: Optional NetworkCommanderRepo adapter (defaults to singleton)
         operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    ctx = get_context()
-    if vnic_repo is None:
-        vnic_repo = ctx.vnic_repo
-    if network_commander is None:
-        network_commander = ctx.network_event_listener
-    if operations_state is None:
-        operations_state = ctx.operations_state
-
     # Clean up Proxy ARP bridges via netmon before deleting container
     # This must be done before container removal to ensure routes are properly cleaned
     try:
@@ -211,10 +189,11 @@ async def delete_runtime_container(
         vnic_repo=vnic_repo,
         serial_repo=serial_repo,
         operations_state=operations_state,
+        devices_usage_buffer=devices_usage_buffer,
     )
 
 
-async def start_deletion(container_name):
+async def start_deletion(container_name, *, ctx):
     """
     Validate preconditions and begin container deletion as a background task.
 
@@ -222,7 +201,6 @@ async def start_deletion(container_name):
         Tuple of (status_dict, started: bool). If started=True, deletion is running
         as a background task. If started=False, status_dict contains the error.
     """
-    ctx = get_context()
     operations_state = ctx.operations_state
 
     in_progress, operation_type = operations_state.is_operation_in_progress(container_name)
@@ -240,7 +218,16 @@ async def start_deletion(container_name):
 
     log_info(f"Deleting runtime container: {container_name}")
 
-    asyncio.create_task(delete_runtime_container(container_name))
+    asyncio.create_task(delete_runtime_container(
+        container_name,
+        container_runtime=ctx.container_runtime,
+        client_registry=ctx.client_registry,
+        vnic_repo=ctx.vnic_repo,
+        serial_repo=ctx.serial_repo,
+        network_commander=ctx.network_event_listener,
+        operations_state=ctx.operations_state,
+        devices_usage_buffer=ctx.devices_usage_buffer,
+    ))
 
     return {
         "status": "deleting",

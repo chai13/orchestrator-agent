@@ -16,7 +16,7 @@ MESSAGE_TYPE = {
 
 
 @topic(NAME)
-def init(client):
+def init(client, ctx):
     """
     Handle the 'get_host_interfaces' topic to retrieve network interfaces on the host.
 
@@ -38,7 +38,10 @@ def init(client):
         include_virtual = message.get("include_virtual", False)
         detailed = message.get("detailed", True)
 
-        result = get_host_interfaces_data(include_virtual, detailed)
+        result = get_host_interfaces_data(
+            include_virtual, detailed,
+            interface_cache=ctx.network_interface_cache,
+        )
 
         return {
             "action": NAME,
