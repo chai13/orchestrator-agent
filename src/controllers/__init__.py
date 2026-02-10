@@ -6,7 +6,7 @@ from .webrtc_controller import (
     init as init_webrtc_controller,
     start as start_webrtc_controller,
     stop as stop_webrtc_controller,
-    get_session_manager as get_webrtc_session_manager,
+    WebRTCSessionManager,
 )
 from bootstrap import get_context
 from tools.logger import *
@@ -43,14 +43,15 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         init_websocket_controller(client)
 
         # Initialize WebRTC controller (signaling topics)
-        init_webrtc_controller(client)
+        session_manager = WebRTCSessionManager()
+        init_webrtc_controller(client, session_manager, ctx.client_registry)
 
         # Start network event listener
         await ctx.network_event_listener.start()
         log_info("Network event listener started")
 
         # Start WebRTC session manager background tasks
-        await start_webrtc_controller()
+        await start_webrtc_controller(session_manager)
         log_info("WebRTC controller started")
 
         await client.connect(
@@ -61,7 +62,7 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
     finally:
         # Cleanup WebRTC controller on disconnect
         log_info("Cleaning up controllers...")
-        await stop_webrtc_controller()
+        await stop_webrtc_controller(session_manager)
         log_info("WebRTC controller stopped")
 
         # Cleanup: close HTTP session to release resources
@@ -134,6 +135,3 @@ async def main_webrtc_task(*args, **kwargs):
     )
 
 
-def get_session_manager():
-    """Get the WebRTC session manager instance."""
-    return get_webrtc_session_manager()

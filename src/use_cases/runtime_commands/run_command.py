@@ -77,3 +77,41 @@ def execute(instance, command, *, http_client=None):
             content["files"] = processed_files
 
     return http_client.make_request(method, ip, port, api, content)
+
+
+def execute_for_device(device_id, message, *, client_registry=None, http_client=None):
+    """
+    Look up a device and execute an HTTP command on it.
+
+    Args:
+        device_id: Target runtime container identifier
+        message: Dict containing method, api, port, headers, data, params, files
+        client_registry: Optional ClientRepo (defaults to singleton)
+        http_client: Optional HTTPClientRepo (defaults to singleton)
+
+    Returns:
+        Dict with status and http_response, or status and error
+    """
+    if client_registry is None:
+        client_registry = get_context().client_registry
+
+    instance = client_registry.get_client(device_id)
+    if not instance:
+        return {"status": "error", "error": f"Device not found: {device_id}"}
+
+    command = {
+        "method": message.get("method"),
+        "api": message.get("api"),
+        "port": message.get("port", 8443),
+        "headers": message.get("headers", {}),
+        "data": message.get("data"),
+        "params": message.get("params"),
+        "files": message.get("files"),
+    }
+
+    http_response = execute(instance, command, http_client=http_client)
+
+    return {
+        "status": "success" if http_response.get("ok") else "error",
+        "http_response": http_response,
+    }

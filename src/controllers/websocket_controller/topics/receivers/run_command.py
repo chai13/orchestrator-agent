@@ -1,7 +1,6 @@
 import asyncio
 
-from use_cases.runtime_commands import run_command
-from bootstrap import get_context
+from use_cases.runtime_commands.run_command import execute_for_device
 from . import topic, validate_message
 from tools.logger import *
 from tools.contract_validation import (
@@ -69,41 +68,12 @@ def init(client):
     async def callback(message):
         correlation_id = message.get("correlation_id")
         device_id = message.get("device_id")
-        method = message.get("method")
-        api = message.get("api")
 
-        log_info(f"Received run_command for device {device_id}: {method} {api}")
+        log_info(f"Received run_command for device {device_id}: {message.get('method')} {message.get('api')}")
 
-        # Validate device exists
-        instance = get_context().client_registry.get_client(device_id)
-        if not instance:
-            log_error(f"Device not found: {device_id}")
-            return {
-                "action": NAME,
-                "correlation_id": correlation_id,
-                "status": "error",
-                "error": f"Device not found: {device_id}",
-            }
+        result = await asyncio.to_thread(execute_for_device, device_id, message)
 
-        # Build command object for run_command.execute
-        command = {
-            "method": method,
-            "api": api,
-            "port": message.get("port", 8443),
-            "headers": message.get("headers", {}),
-            "data": message.get("data"),
-            "params": message.get("params"),
-            "files": message.get("files"),
-        }
+        if result.get("http_response"):
+            log_info(f"Command completed with status {result['http_response'].get('status_code')}")
 
-        # Execute the HTTP request in a thread to avoid blocking the event loop
-        http_response = await asyncio.to_thread(run_command.execute, instance, command)
-        log_info(f"Command completed with status {http_response.get('status_code')}")
-
-        # Return response with correlation_id
-        return {
-            "action": NAME,
-            "correlation_id": correlation_id,
-            "status": "success" if http_response.get("ok") else "error",
-            "http_response": http_response,
-        }
+        return {"action": NAME, "correlation_id": correlation_id, **result}

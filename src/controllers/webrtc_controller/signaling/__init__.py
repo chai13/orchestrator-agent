@@ -9,14 +9,15 @@ from .ice_handler import init as init_ice_handler
 from .disconnect_handler import init as init_disconnect_handler
 
 
-def initialize_signaling(client, session_manager):
+def initialize_signaling(client, session_manager, client_registry):
     """
     Initialize all signaling handlers.
 
     Args:
         client: Socket.IO client
         session_manager: WebRTCSessionManager instance
+        client_registry: ClientRepo instance for device lookups
     """
-    init_offer_handler(client, session_manager)
+    init_offer_handler(client, session_manager, client_registry)
     init_ice_handler(client, session_manager)
     init_disconnect_handler(client, session_manager)

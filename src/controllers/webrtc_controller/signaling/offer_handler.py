@@ -12,7 +12,6 @@ from tools.contract_validation import (
     BASE_MESSAGE,
     validate_contract_with_error_response,
 )
-from bootstrap import get_context
 from ..types import SessionState
 from ..data_channel import DataChannelHandler
 
@@ -29,13 +28,14 @@ MESSAGE_CONTRACT = {
 }
 
 
-def init(client, session_manager):
+def init(client, session_manager, client_registry):
     """
     Initialize the WebRTC offer handler.
 
     Args:
         client: Socket.IO client
         session_manager: WebRTCSessionManager instance
+        client_registry: ClientRepo instance for device lookups
     """
     log_info(f"Registering topic: {NAME}")
 
@@ -73,7 +73,6 @@ def init(client, session_manager):
         log_info(f"Device ID: {device_id}")
         log_info(f"SDP type: {sdp_type}")
         log_info(f"SDP length: {len(sdp)} chars")
-        client_registry = get_context().client_registry
         log_debug(f"Available devices: {list(client_registry.list_clients().keys())}")
 
         # Verify device exists
@@ -140,7 +139,7 @@ def init(client, session_manager):
                 session_manager.set_data_channel(session_id, channel)
 
                 log_info(f"Creating DataChannelHandler for session {session_id}")
-                handler = DataChannelHandler(channel, session_id, session_manager)
+                handler = DataChannelHandler(channel, session_id, session_manager, client_registry)
                 session_manager.set_channel_handler(session_id, handler)
                 log_info(f"DataChannelHandler created successfully")
 
