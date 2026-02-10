@@ -1,4 +1,4 @@
-from . import get_self_container
+from . import get_self_container, stop_and_remove_container, remove_internal_network
 from tools.logger import log_info, log_warning, log_error
 import json
 import re
@@ -38,18 +38,7 @@ def _delete_runtime_container_for_selfdestruct(container_name, container_runtime
     # Veth pairs auto-cleanup when containers are deleted (kernel behavior).
     # Proxy ARP neighbor entries are cleaned in bulk via _cleanup_proxy_arp_veths().
 
-    try:
-        container = container_runtime.get_container(container_name)
-        log_info(f"Stopping container {container_name}")
-        container.stop(timeout=10)
-        log_info(f"Removing container {container_name}")
-        container.remove(force=True)
-        log_info(f"Container {container_name} removed successfully")
-    except container_runtime.NotFoundError:
-        log_warning(f"Container {container_name} not found, may have been already deleted")
-    except Exception as e:
-        log_error(f"Error stopping/removing container {container_name}: {e}")
-        raise
+    stop_and_remove_container(container_name, container_runtime=container_runtime)
 
     try:
         devices_usage_buffer.remove_device(container_name)
@@ -61,26 +50,7 @@ def _delete_runtime_container_for_selfdestruct(container_name, container_runtime
     except Exception as e:
         log_warning(f"Error deleting vNIC configurations for {container_name}: {e}")
 
-    internal_network_name = f"{container_name}_internal"
-    try:
-        internal_network = container_runtime.get_network(internal_network_name)
-        internal_network.reload()
-        connected_containers = internal_network.attrs.get("Containers", {})
-
-        if connected_containers:
-            for container_id in list(connected_containers.keys()):
-                try:
-                    internal_network.disconnect(container_id, force=True)
-                except Exception as e:
-                    log_warning(f"Error disconnecting container from {internal_network_name}: {e}")
-
-        log_info(f"Removing internal network {internal_network_name}")
-        internal_network.remove()
-        log_info(f"Internal network {internal_network_name} removed successfully")
-    except container_runtime.NotFoundError:
-        log_warning(f"Internal network {internal_network_name} not found")
-    except Exception as e:
-        log_warning(f"Error removing internal network {internal_network_name}: {e}")
+    remove_internal_network(container_name, container_runtime=container_runtime, disconnect_all=True)
 
 
 def _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo, devices_usage_buffer):

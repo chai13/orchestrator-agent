@@ -1,6 +1,6 @@
 from tools.logger import log_warning, log_error, log_info
 from tools.contract_validation import BASE_MESSAGE
-from . import topic, validate_message
+from . import topic, validate_message, with_response
 from use_cases.docker_manager.selfdestruct import (
     self_destruct,
     start_self_destruct,
@@ -37,15 +37,13 @@ def init(client, ctx):
 
     @client.on(NAME)
     @validate_message(MESSAGE_TYPE, NAME)
+    @with_response(NAME)
     async def callback(message):
-        correlation_id = message.get("correlation_id")
         log_warning("Received delete_orchestrator command - initiating self-destruct...")
 
         if not start_self_destruct(operations_state=ctx.operations_state):
             log_error("Self-destruct operation already in progress")
             return {
-                "action": NAME,
-                "correlation_id": correlation_id,
                 "status": "error",
                 "error": "Self-destruct operation already in progress",
             }
@@ -75,8 +73,6 @@ def init(client, ctx):
 
         log_info("Self-destruct scheduled, returning accepted response")
         return {
-            "action": NAME,
-            "correlation_id": correlation_id,
             "status": "accepted",
             "message": "Self-destruct initiated. Poll get_device_status with device_id='__orchestrator__' for progress.",
             "poll_device_id": ORCHESTRATOR_STATUS_ID,

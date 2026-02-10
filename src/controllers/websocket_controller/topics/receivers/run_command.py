@@ -1,7 +1,7 @@
 import asyncio
 
 from use_cases.runtime_commands.run_command import execute_for_device
-from . import topic, validate_message
+from . import topic, validate_message, with_response
 from tools.logger import *
 from tools.contract_validation import (
     StringType,
@@ -65,8 +65,8 @@ def init(client, ctx):
 
     @client.on(NAME)
     @validate_message(MESSAGE_TYPE, NAME, add_defaults=True)
+    @with_response(NAME)
     async def callback(message):
-        correlation_id = message.get("correlation_id")
         device_id = message.get("device_id")
 
         log_info(f"Received run_command for device {device_id}: {message.get('method')} {message.get('api')}")
@@ -80,4 +80,4 @@ def init(client, ctx):
         if result.get("http_response"):
             log_info(f"Command completed with status {result['http_response'].get('status_code')}")
 
-        return {"action": NAME, "correlation_id": correlation_id, **result}
+        return result

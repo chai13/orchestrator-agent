@@ -10,6 +10,23 @@ from datetime import datetime
 from typing import Dict, Optional, Tuple
 
 
+def begin_operation(container_name, set_fn, *, operations_state):
+    """Check no operation is in progress and set the new state.
+    Returns (error_dict, False) on failure, (None, True) on success."""
+    in_progress, operation_type = operations_state.is_operation_in_progress(container_name)
+    if in_progress:
+        return {
+            "status": "error",
+            "error": f"Container {container_name} already has a {operation_type} operation in progress",
+        }, False
+    if not set_fn(container_name):
+        return {
+            "status": "error",
+            "error": f"Failed to start operation for {container_name}",
+        }, False
+    return None, True
+
+
 class OperationsStateTracker:
     """
     Thread-safe tracker for container operations state.

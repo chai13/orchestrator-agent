@@ -1,4 +1,4 @@
-from . import get_self_container
+from . import stop_and_remove_container, remove_internal_network
 from tools.logger import *
 import asyncio
 
@@ -41,22 +41,7 @@ def _delete_runtime_container_sync(
 
     try:
         operations_state.set_step(container_name, "stopping_container")
-        try:
-            container = container_runtime.get_container(container_name)
-            log_info(f"Stopping container {container_name}")
-            container.stop(timeout=10)
-
-            operations_state.set_step(container_name, "removing_container")
-            log_info(f"Removing container {container_name}")
-            container.remove(force=True)
-            log_info(f"Container {container_name} removed successfully")
-        except container_runtime.NotFoundError:
-            log_warning(
-                f"Container {container_name} not found, may have been already deleted"
-            )
-        except Exception as e:
-            log_error(f"Error stopping/removing container {container_name}: {e}")
-            raise
+        stop_and_remove_container(container_name, container_runtime=container_runtime)
 
         try:
             client_registry.remove_client(container_name)
@@ -83,41 +68,7 @@ def _delete_runtime_container_sync(
             log_warning(f"Error deleting serial configurations for {container_name}: {e}")
 
         operations_state.set_step(container_name, "removing_networks")
-        internal_network_name = f"{container_name}_internal"
-        try:
-            internal_network = container_runtime.get_network(internal_network_name)
-
-            internal_network.reload()
-            connected_containers = internal_network.attrs.get("Containers", {})
-
-            if connected_containers:
-                log_debug(
-                    f"Internal network {internal_network_name} still has {len(connected_containers)} "
-                    f"connected container(s), disconnecting them before removal"
-                )
-
-                try:
-                    main_container = get_self_container()
-                    if main_container and main_container.id in connected_containers:
-                        internal_network.disconnect(main_container, force=True)
-                        log_debug(
-                            f"Disconnected orchestrator-agent from internal network {internal_network_name}"
-                        )
-                except Exception as e:
-                    log_warning(
-                        f"Error disconnecting orchestrator-agent from internal network: {e}"
-                    )
-
-            log_info(f"Removing internal network {internal_network_name}")
-            internal_network.remove()
-            log_info(f"Internal network {internal_network_name} removed successfully")
-
-        except container_runtime.NotFoundError:
-            log_debug(
-                f"Internal network {internal_network_name} not found, may have been already deleted"
-            )
-        except Exception as e:
-            log_warning(f"Error removing internal network {internal_network_name}: {e}")
+        remove_internal_network(container_name, container_runtime=container_runtime)
 
         log_info(
             f"Runtime container {container_name} and associated resources deleted successfully"
@@ -201,20 +152,12 @@ async def start_deletion(container_name, *, ctx):
         Tuple of (status_dict, started: bool). If started=True, deletion is running
         as a background task. If started=False, status_dict contains the error.
     """
+    from tools.operations_state import begin_operation
     operations_state = ctx.operations_state
 
-    in_progress, operation_type = operations_state.is_operation_in_progress(container_name)
-    if in_progress:
-        return {
-            "status": "error",
-            "error": f"Container {container_name} already has a {operation_type} operation in progress",
-        }, False
-
-    if not operations_state.set_deleting(container_name):
-        return {
-            "status": "error",
-            "error": f"Failed to start deletion for {container_name}",
-        }, False
+    error, ok = begin_operation(container_name, operations_state.set_deleting, operations_state=operations_state)
+    if not ok:
+        return error, False
 
     log_info(f"Deleting runtime container: {container_name}")
 

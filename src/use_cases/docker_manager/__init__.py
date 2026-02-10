@@ -1,6 +1,6 @@
 import os
 import socket
-from tools.logger import log_debug, log_warning
+from tools.logger import log_debug, log_info, log_error, log_warning
 
 HOST_NAME = os.getenv("HOST_NAME", "orchestrator-agent-devcontainer")
 
@@ -60,3 +60,50 @@ def get_self_container(*, container_runtime):
 
     log_warning("Could not detect self container using any method")
     return None
+
+
+def stop_and_remove_container(container_name, *, container_runtime):
+    """Stop and force-remove a container. Logs warning if not found, re-raises other errors."""
+    try:
+        container = container_runtime.get_container(container_name)
+        log_info(f"Stopping container {container_name}")
+        container.stop(timeout=10)
+        log_info(f"Removing container {container_name}")
+        container.remove(force=True)
+        log_info(f"Container {container_name} removed successfully")
+    except container_runtime.NotFoundError:
+        log_warning(f"Container {container_name} not found, may have been already deleted")
+    except Exception as e:
+        log_error(f"Error stopping/removing container {container_name}: {e}")
+        raise
+
+
+def remove_internal_network(container_name, *, container_runtime, disconnect_all=False):
+    """Remove a container's internal network.
+    If disconnect_all=True, disconnects all containers. Otherwise only disconnects orchestrator."""
+    internal_network_name = f"{container_name}_internal"
+    try:
+        network = container_runtime.get_network(internal_network_name)
+        network.reload()
+        connected = network.attrs.get("Containers", {})
+        if connected:
+            if disconnect_all:
+                for cid in list(connected.keys()):
+                    try:
+                        network.disconnect(cid, force=True)
+                    except Exception as e:
+                        log_warning(f"Error disconnecting container from {internal_network_name}: {e}")
+            else:
+                try:
+                    main = get_self_container(container_runtime=container_runtime)
+                    if main and main.id in connected:
+                        network.disconnect(main, force=True)
+                except Exception as e:
+                    log_warning(f"Error disconnecting orchestrator from internal network: {e}")
+        log_info(f"Removing internal network {internal_network_name}")
+        network.remove()
+        log_info(f"Internal network {internal_network_name} removed successfully")
+    except container_runtime.NotFoundError:
+        log_warning(f"Internal network {internal_network_name} not found")
+    except Exception as e:
+        log_warning(f"Error removing internal network {internal_network_name}: {e}")

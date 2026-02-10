@@ -608,20 +608,12 @@ async def start_creation(container_name, vnic_configs, serial_configs=None, runt
         Tuple of (status_dict, started: bool). If started=True, creation is running
         as a background task. If started=False, status_dict contains the error.
     """
+    from tools.operations_state import begin_operation
     operations_state = ctx.operations_state
 
-    in_progress, operation_type = operations_state.is_operation_in_progress(container_name)
-    if in_progress:
-        return {
-            "status": "error",
-            "error": f"Container {container_name} already has a {operation_type} operation in progress",
-        }, False
-
-    if not operations_state.set_creating(container_name):
-        return {
-            "status": "error",
-            "error": f"Failed to start creation for {container_name}",
-        }, False
+    error, ok = begin_operation(container_name, operations_state.set_creating, operations_state=operations_state)
+    if not ok:
+        return error, False
 
     log_info(f"Creating runtime container: {container_name}")
     if serial_configs:

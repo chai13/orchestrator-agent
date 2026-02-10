@@ -28,6 +28,16 @@ class StringType(BaseType):
             raise TypeError("Value must be a string.")
 
 
+class NonEmptyStringType(BaseType):
+
+    @staticmethod
+    def validate(value):
+        if not isinstance(value, str):
+            raise TypeError("Value must be a string.")
+        if not value.strip():
+            raise TypeError("Value must be a non-empty string.")
+
+
 class DateType(BaseType):
 
     @staticmethod
@@ -83,7 +93,7 @@ BASE_MESSAGE = {
     "requested_at": OptionalType(DateType),
 }
 
-BASE_DEVICE = {**BASE_MESSAGE, "device_id": StringType}
+BASE_DEVICE = {**BASE_MESSAGE, "device_id": NonEmptyStringType}
 
 # Serial port configuration schema for vPLC containers
 # Used in create_new_runtime and attach_serial_device topics

@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 
 from tools.logger import log_error
 
@@ -28,3 +29,22 @@ def write_json_file(file_path: str, data: dict, indent: int = 2) -> None:
         os.makedirs(config_dir, exist_ok=True)
     with open(file_path, "w") as f:
         json.dump(data, f, indent=indent)
+
+
+class JsonConfigStore:
+    """Thread-safe JSON file store for container-keyed configs."""
+
+    def __init__(self, config_file):
+        self._config_file = config_file
+        self._lock = threading.Lock()
+
+    def read_all(self):
+        with self._lock:
+            return read_json_file(self._config_file)
+
+    def modify(self, fn):
+        """Read all, call fn(data) to mutate, write back."""
+        with self._lock:
+            data = read_json_file(self._config_file)
+            fn(data)
+            write_json_file(self._config_file, data)

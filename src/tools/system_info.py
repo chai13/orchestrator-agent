@@ -7,6 +7,7 @@ and dynamic IP addresses from the interface cache.
 import psutil
 import platform
 from typing import List, Dict
+from tools.system_metrics import _iter_disk_usage
 
 # Virtual interface prefixes to filter out (Docker bridges, VPNs, etc.)
 VIRTUAL_INTERFACE_PREFIXES = [
@@ -137,48 +138,7 @@ def get_total_disk() -> int:
     Returns:
         int: Total disk space in GB
     """
-    total_space = 0
-    seen_devices = set()
-
-    SKIP_FSTYPES = {
-        "tmpfs",
-        "devtmpfs",
-        "overlay",
-        "squashfs",
-        "ramfs",
-        "proc",
-        "sysfs",
-        "cgroup",
-        "cgroup2",
-        "debugfs",
-        "tracefs",
-        "pstore",
-        "autofs",
-        "devpts",
-        "mqueue",
-        "hugetlbfs",
-        "fusectl",
-        "none",
-    }
-
-    partitions = psutil.disk_partitions(all=False)
-
-    for partition in partitions:
-        if partition.fstype.lower() in SKIP_FSTYPES:
-            continue
-
-        if not partition.device or partition.device in seen_devices:
-            continue
-
-        seen_devices.add(partition.device)
-
-        try:
-            usage = psutil.disk_usage(partition.mountpoint)
-            total_space += usage.total
-        except (PermissionError, OSError):
-            continue
-
-    return int(total_space / (1024 * 1024 * 1024))
+    return int(sum(u.total for u in _iter_disk_usage()) / (1024 ** 3))
 
 
 def get_static_system_info() -> Dict:

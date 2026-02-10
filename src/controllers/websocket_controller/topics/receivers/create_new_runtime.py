@@ -2,12 +2,13 @@ from use_cases.docker_manager.create_runtime_container import start_creation
 from tools.logger import *
 from tools.contract_validation import (
     StringType,
+    NonEmptyStringType,
     ListType,
     OptionalType,
     BASE_MESSAGE,
     SERIAL_CONFIG_TYPE,
 )
-from . import topic, validate_message
+from . import topic, validate_message, with_response
 
 NAME = "create_new_runtime"
 
@@ -24,7 +25,7 @@ VNIC_CONFIG_TYPE = {
 
 MESSAGE_TYPE = {
     **BASE_MESSAGE,
-    "container_name": StringType,
+    "container_name": NonEmptyStringType,
     "vnic_configs": ListType(VNIC_CONFIG_TYPE),
     "serial_configs": OptionalType(ListType(SERIAL_CONFIG_TYPE)),
     "runtime_version": OptionalType(StringType),
@@ -43,44 +44,16 @@ def init(client, ctx):
 
     @client.on(NAME)
     @validate_message(MESSAGE_TYPE, NAME, add_defaults=True)
+    @with_response(NAME)
     async def callback(message):
-        correlation_id = message.get("correlation_id")
         container_name = message.get("container_name")
         vnic_configs = message.get("vnic_configs", [])
         serial_configs = message.get("serial_configs", [])
         runtime_version = message.get("runtime_version")
 
-        if (
-            not container_name
-            or not isinstance(container_name, str)
-            or not container_name.strip()
-        ):
-            log_error("Container name is empty or invalid")
-            return {
-                "action": NAME,
-                "correlation_id": correlation_id,
-                "status": "error",
-                "error": "Container name must be a non-empty string",
-            }
-
-        if (
-            not vnic_configs
-            or not isinstance(vnic_configs, list)
-            or len(vnic_configs) == 0
-        ):
-            log_error("vnic_configs is empty or invalid")
-            return {
-                "action": NAME,
-                "correlation_id": correlation_id,
-                "status": "error",
-                "error": "At least one vNIC configuration is required",
-            }
-
         result, started = await start_creation(
             container_name, vnic_configs, serial_configs, runtime_version, ctx=ctx
         )
-        result["action"] = NAME
-        result["correlation_id"] = correlation_id
         if started and serial_configs:
             result["serial_configs_count"] = len(serial_configs)
         return result

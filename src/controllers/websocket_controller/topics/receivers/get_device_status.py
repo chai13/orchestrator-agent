@@ -1,6 +1,6 @@
 from use_cases.docker_manager.get_device_status import get_device_status_data
 from tools.contract_validation import BASE_DEVICE
-from . import topic, validate_message
+from . import topic, validate_message, with_response
 
 NAME = "get_device_status"
 
@@ -24,11 +24,11 @@ def init(client, ctx):
 
     @client.on(NAME)
     @validate_message(MESSAGE_TYPE, NAME, add_defaults=True)
+    @with_response(NAME)
     async def callback(message):
-        correlation_id = message.get("correlation_id")
         device_id = message.get("device_id")
 
-        result = get_device_status_data(
+        return get_device_status_data(
             device_id,
             container_runtime=ctx.container_runtime,
             client_registry=ctx.client_registry,
@@ -36,9 +36,3 @@ def init(client, ctx):
             serial_repo=ctx.serial_repo,
             operations_state=ctx.operations_state,
         )
-
-        return {
-            "action": NAME,
-            "correlation_id": correlation_id,
-            **result,
-        }

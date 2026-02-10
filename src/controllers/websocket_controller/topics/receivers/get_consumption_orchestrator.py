@@ -1,7 +1,7 @@
 from tools.logger import *
 from tools.contract_validation import BASE_MESSAGE, StringType
 from use_cases.get_consumption_orchestrator import get_consumption_orchestrator_data
-from . import topic, validate_message
+from . import topic, validate_message, with_response
 
 NAME = "get_consumption_orchestrator"
 
@@ -16,6 +16,7 @@ def init(client, ctx):
 
     @client.on(NAME)
     @validate_message(MESSAGE_TYPE, NAME)
+    @with_response(NAME)
     async def callback(message):
         log_debug(f"Received get_consumption_orchestrator request: {message}")
 
@@ -31,4 +32,4 @@ def init(client, ctx):
             f"Returning get_consumption_orchestrator response with "
             f"{len(result['cpu_usage'])} CPU samples and {len(result['memory_usage'])} memory samples"
         )
-        return {"action": NAME, "correlation_id": message.get("correlation_id"), **result}
+        return result

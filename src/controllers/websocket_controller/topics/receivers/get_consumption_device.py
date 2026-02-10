@@ -1,7 +1,7 @@
 from tools.logger import *
 from tools.contract_validation import BASE_DEVICE, StringType
 from use_cases.get_consumption_device import get_consumption_device_data
-from . import topic, validate_message
+from . import topic, validate_message, with_response
 
 NAME = "get_consumption_device"
 
@@ -20,6 +20,7 @@ def init(client, ctx):
 
     @client.on(NAME)
     @validate_message(MESSAGE_TYPE, NAME)
+    @with_response(NAME)
     async def callback(message):
         log_debug(f"Received get_consumption_device request: {message}")
 
@@ -36,4 +37,4 @@ def init(client, ctx):
         log_debug(
             f"Returning get_consumption_device response for {device_id}"
         )
-        return {"action": NAME, "correlation_id": message.get("correlation_id"), **result}
+        return result
