@@ -284,10 +284,16 @@ def _create_runtime_container_sync(container_name: str, vnic_configs: list, seri
         container = CLIENT.containers.create(**create_kwargs)
 
         # Connect MACVLAN networks after creation (Docker API only allows
-        # one network at creation time)
-        for network, vnic_config, endpoint_kwargs in macvlan_endpoint_configs:
-            network.connect(container, **endpoint_kwargs)
-            log_debug(f"Connected container to MACVLAN network {network.name}")
+        # one network at creation time). If this fails, remove the container
+        # to avoid leaving it in a partial state with only the internal network.
+        try:
+            for network, vnic_config, endpoint_kwargs in macvlan_endpoint_configs:
+                network.connect(container, **endpoint_kwargs)
+                log_debug(f"Connected container to MACVLAN network {network.name}")
+        except docker.errors.APIError as e:
+            log_error(f"Failed to connect MACVLAN network, removing container: {e}")
+            container.remove(force=True)
+            raise
 
         container.start()
         log_info(f"Container {container_name} created and started successfully")
