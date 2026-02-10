@@ -1,4 +1,4 @@
-from typing import Protocol, Any, List
+from typing import Protocol, Any, Dict, List, Optional
 
 
 class ContainerRuntimeRepoInterface(Protocol):
@@ -18,3 +18,14 @@ class ContainerRuntimeRepoInterface(Protocol):
     def create_ipam_pool(self, **kwargs) -> Any: ...
     def create_ipam_config(self, pool_configs: list) -> Any: ...
     def create_ulimit(self, name: str, soft: int, hard: int) -> Any: ...
+    def get_or_create_macvlan_network(
+        self,
+        parent_interface: str,
+        parent_subnet: Optional[str] = None,
+        parent_gateway: Optional[str] = None,
+        interface_cache: Any = None,
+    ) -> Any: ...
+    def create_internal_network(self, container_name: str) -> Any: ...
+    def get_existing_mac_addresses_on_interface(
+        self, parent_interface: str
+    ) -> Dict[str, str]: ...

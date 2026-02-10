@@ -158,39 +158,3 @@ class OperationsStateTracker:
             return False, None
 
 
-_tracker = OperationsStateTracker()
-
-
-def set_creating(container_name: str) -> bool:
-    """Mark a container as being created."""
-    return _tracker.set_creating(container_name)
-
-
-def set_deleting(container_name: str) -> bool:
-    """Mark a container as being deleted."""
-    return _tracker.set_deleting(container_name)
-
-
-def set_step(container_name: str, step: str):
-    """Update the current step of an ongoing operation."""
-    _tracker.set_step(container_name, step)
-
-
-def set_error(container_name: str, error: str, operation: str = None):
-    """Mark an operation as failed with an error message."""
-    _tracker.set_error(container_name, error, operation)
-
-
-def clear_state(container_name: str):
-    """Clear the operation state for a container."""
-    _tracker.clear_state(container_name)
-
-
-def get_state(container_name: str) -> Optional[Dict]:
-    """Get the current operation state for a container."""
-    return _tracker.get_state(container_name)
-
-
-def is_operation_in_progress(container_name: str) -> Tuple[bool, Optional[str]]:
-    """Check if an operation is in progress for a container."""
-    return _tracker.is_operation_in_progress(container_name)

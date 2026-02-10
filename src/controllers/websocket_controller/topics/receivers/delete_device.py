@@ -1,14 +1,11 @@
 from use_cases.docker_manager.delete_runtime_container import delete_runtime_container
-from tools.operations_state import (
-    set_deleting,
-    is_operation_in_progress,
-)
 from tools.logger import *
 from tools.contract_validation import (
     StringType,
     NumberType,
     OptionalType,
 )
+from bootstrap import get_context
 from . import topic, validate_message
 import asyncio
 
@@ -46,7 +43,9 @@ def init(client):
                 "error": "Device ID must be a non-empty string",
             }
 
-        in_progress, operation_type = is_operation_in_progress(device_id)
+        operations_state = get_context().operations_state
+
+        in_progress, operation_type = operations_state.is_operation_in_progress(device_id)
         if in_progress:
             log_warning(
                 f"Container {device_id} already has a {operation_type} operation in progress"
@@ -58,7 +57,7 @@ def init(client):
                 "error": f"Container {device_id} already has a {operation_type} operation in progress",
             }
 
-        if not set_deleting(device_id):
+        if not operations_state.set_deleting(device_id):
             log_error(f"Failed to set deleting state for {device_id} (race condition)")
             return {
                 "action": NAME,

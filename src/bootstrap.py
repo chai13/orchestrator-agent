@@ -14,6 +14,10 @@ from repos import (
     HTTPClientRepo,
     NetworkInterfaceCacheRepo,
 )
+from tools.operations_state import OperationsStateTracker
+from tools.devices_usage_buffer import DevicesUsageBuffer
+from tools.network_event_listener import NetworkEventListener
+from tools.logger import log_info
 
 
 class AppContext:
@@ -26,6 +30,18 @@ class AppContext:
         self.client_registry = ClientRepo()
         self.http_client = HTTPClientRepo()
         self.network_interface_cache = NetworkInterfaceCacheRepo()
+        self.operations_state = OperationsStateTracker()
+        self.devices_usage_buffer = DevicesUsageBuffer()
+        self.network_event_listener = NetworkEventListener(
+            interface_cache=self.network_interface_cache,
+        )
+
+        # Register existing clients for usage data collection at bootstrap time
+        clients = self.client_registry.list_clients()
+        if clients:
+            for client_name in clients:
+                self.devices_usage_buffer.add_device(client_name)
+                log_info(f"Registered existing client {client_name} for usage data collection")
 
 
 _context = None

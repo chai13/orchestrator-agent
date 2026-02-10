@@ -1,9 +1,4 @@
 from use_cases.docker_manager.create_runtime_container import create_runtime_container
-from tools.operations_state import (
-    set_creating,
-    is_operation_in_progress,
-    clear_state,
-)
 from tools.logger import *
 from tools.contract_validation import (
     StringType,
@@ -12,7 +7,7 @@ from tools.contract_validation import (
     BASE_MESSAGE,
     SERIAL_CONFIG_TYPE,
 )
-from tools.docker_tools import get_existing_mac_addresses_on_interface
+from bootstrap import get_context
 from . import topic, validate_message
 import asyncio
 
@@ -83,7 +78,9 @@ def init(client):
                 "error": "At least one vNIC configuration is required",
             }
 
-        in_progress, operation_type = is_operation_in_progress(container_name)
+        operations_state = get_context().operations_state
+
+        in_progress, operation_type = operations_state.is_operation_in_progress(container_name)
         if in_progress:
             log_warning(
                 f"Container {container_name} already has a {operation_type} operation in progress"
@@ -95,7 +92,7 @@ def init(client):
                 "error": f"Container {container_name} already has a {operation_type} operation in progress",
             }
 
-        if not set_creating(container_name):
+        if not operations_state.set_creating(container_name):
             log_error(
                 f"Failed to set creating state for {container_name} (race condition)"
             )
@@ -105,34 +102,6 @@ def init(client):
                 "status": "error",
                 "error": f"Failed to start creation for {container_name}",
             }
-
-        # Check for MAC address conflicts before proceeding with container creation
-        for vnic_config in vnic_configs:
-            mac_address = vnic_config.get("mac")
-            if mac_address:
-                parent_interface = vnic_config.get("parent_interface")
-                vnic_name = vnic_config.get("name", "unnamed")
-
-                existing_macs = get_existing_mac_addresses_on_interface(
-                    parent_interface
-                )
-                mac_lower = mac_address.lower()
-
-                if mac_lower in existing_macs:
-                    conflicting_container = existing_macs[mac_lower]
-                    log_error(
-                        f"MAC address {mac_address} for vNIC {vnic_name} already exists "
-                        f"on container {conflicting_container} (interface: {parent_interface})"
-                    )
-                    clear_state(container_name)
-                    return {
-                        "action": NAME,
-                        "correlation_id": correlation_id,
-                        "status": "error",
-                        "error": (
-                            f"MAC address {mac_address} is already in use."
-                        ),
-                    }
 
         log_info(f"Creating runtime container: {container_name}")
         if serial_configs:

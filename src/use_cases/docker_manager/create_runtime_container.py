@@ -1,14 +1,6 @@
 from . import get_self_container
-from tools.operations_state import set_step, set_error, clear_state
 from tools.logger import *
-from tools.docker_tools import (
-    get_or_create_macvlan_network,
-    create_internal_network,
-    get_macvlan_network_key,
-)
-from tools.interface_cache import get_interface_type
-from tools.devices_usage_buffer import get_devices_usage_buffer
-from tools.network_event_listener import network_event_listener
+from tools.network_utils import get_macvlan_network_key
 from bootstrap import get_context
 import asyncio
 import random
@@ -21,9 +13,10 @@ def _resolve_deps(
     client_registry=None,
     interface_cache=None,
     network_commander=None,
+    operations_state=None,
 ):
     """Resolve optional dependencies, falling back to bootstrap singletons."""
-    if any(dep is None for dep in [container_runtime, vnic_repo, serial_repo, client_registry, interface_cache]):
+    if any(dep is None for dep in [container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, operations_state]):
 
         ctx = get_context()
         if container_runtime is None:
@@ -36,9 +29,11 @@ def _resolve_deps(
             client_registry = ctx.client_registry
         if interface_cache is None:
             interface_cache = ctx.network_interface_cache
+        if operations_state is None:
+            operations_state = ctx.operations_state
     if network_commander is None:
-        network_commander = network_event_listener
-    return container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, network_commander
+        network_commander = get_context().network_event_listener
+    return container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, network_commander, operations_state
 
 
 def _generate_mac_address() -> str:
@@ -62,7 +57,7 @@ def _generate_mac_address() -> str:
     return ":".join(f"{octet:02x}" for octet in octets)
 
 
-def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
+def _validate_vnic_configs(vnic_configs: list, interface_cache=None) -> tuple[bool, str]:
     """
     Validate vNIC configurations to detect duplicate networks.
 
@@ -76,10 +71,14 @@ def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
 
     Args:
         vnic_configs: List of vNIC configurations
+        interface_cache: NetworkInterfaceCacheRepo instance
 
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
     """
+    if interface_cache is None:
+        interface_cache = get_context().network_interface_cache
+
     seen_macvlan_networks = {}
     seen_wifi_interfaces = {}
 
@@ -90,7 +89,7 @@ def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
         parent_gateway = vnic_config.get("gateway")
 
         # Determine network type based on interface type
-        interface_type = get_interface_type(parent_interface)
+        interface_type = interface_cache.get_interface_type(parent_interface)
 
         if interface_type == "wifi":
             # WiFi uses Proxy ARP Bridge - check for duplicate interfaces
@@ -105,7 +104,8 @@ def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
         else:
             # Ethernet uses MACVLAN - strict validation for network conflicts
             network_key = get_macvlan_network_key(
-                parent_interface, parent_subnet, parent_gateway
+                parent_interface, parent_subnet, parent_gateway,
+                interface_cache=interface_cache,
             )
 
             if network_key in seen_macvlan_networks:
@@ -124,6 +124,45 @@ def _validate_vnic_configs(vnic_configs: list) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_mac_addresses(vnic_configs: list, container_runtime=None) -> tuple[bool, str]:
+    """
+    Validate that user-specified MAC addresses are not already in use on the interface.
+
+    Only checks vNIC configs that have an explicit 'mac' field set (user-provided MACs).
+    Auto-generated MACs are checked elsewhere during container creation.
+
+    Args:
+        vnic_configs: List of vNIC configurations
+        container_runtime: ContainerRuntimeRepo instance
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is empty.
+    """
+    if container_runtime is None:
+        container_runtime = get_context().container_runtime
+
+    for vnic_config in vnic_configs:
+        mac_address = vnic_config.get("mac")
+        if mac_address:
+            parent_interface = vnic_config.get("parent_interface")
+            vnic_name = vnic_config.get("name", "unnamed")
+
+            existing_macs = container_runtime.get_existing_mac_addresses_on_interface(
+                parent_interface
+            )
+            mac_lower = mac_address.lower()
+
+            if mac_lower in existing_macs:
+                conflicting_container = existing_macs[mac_lower]
+                log_error(
+                    f"MAC address {mac_address} for vNIC {vnic_name} already exists "
+                    f"on container {conflicting_container} (interface: {parent_interface})"
+                )
+                return False, f"MAC address {mac_address} is already in use."
+
+    return True, ""
+
+
 def _create_runtime_container_sync(
     container_name: str,
     vnic_configs: list,
@@ -135,6 +174,7 @@ def _create_runtime_container_sync(
     serial_repo=None,
     client_registry=None,
     interface_cache=None,
+    operations_state=None,
 ):
     """
     Synchronous implementation of runtime container creation.
@@ -162,13 +202,15 @@ def _create_runtime_container_sync(
         serial_repo: Optional SerialRepo adapter (defaults to singleton)
         client_registry: Optional ClientRepo adapter (defaults to singleton)
         interface_cache: Optional InterfaceCacheRepo adapter (defaults to singleton)
+        operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, _ = _resolve_deps(
+    container_runtime, vnic_repo, serial_repo, client_registry, interface_cache, _, operations_state = _resolve_deps(
         container_runtime=container_runtime,
         vnic_repo=vnic_repo,
         serial_repo=serial_repo,
         client_registry=client_registry,
         interface_cache=interface_cache,
+        operations_state=operations_state,
     )
     if serial_configs is None:
         serial_configs = []
@@ -177,21 +219,27 @@ def _create_runtime_container_sync(
 
     if client_registry.contains(container_name):
         log_error(f"Container name {container_name} is already in use.")
-        set_error(container_name, "Container name is already in use", "create")
+        operations_state.set_error(container_name, "Container name is already in use", "create")
         return None
 
-    set_step(container_name, "validating_config")
-    is_valid, error_msg = _validate_vnic_configs(vnic_configs)
+    operations_state.set_step(container_name, "validating_config")
+    is_valid, error_msg = _validate_vnic_configs(vnic_configs, interface_cache=interface_cache)
     if not is_valid:
         log_error(f"vNIC configuration validation failed: {error_msg}")
-        set_error(container_name, error_msg, "create")
+        operations_state.set_error(container_name, error_msg, "create")
+        return None
+
+    is_valid, error_msg = _validate_mac_addresses(vnic_configs, container_runtime=container_runtime)
+    if not is_valid:
+        log_error(f"MAC address validation failed: {error_msg}")
+        operations_state.set_error(container_name, error_msg, "create")
         return None
 
     try:
         version_tag = runtime_version if runtime_version else "latest"
         image_name = f"ghcr.io/autonomy-logic/openplc-runtime:{version_tag}"
 
-        set_step(container_name, "pulling_image")
+        operations_state.set_step(container_name, "pulling_image")
         log_info(f"Pulling image {image_name}")
         try:
             container_runtime.pull_image(image_name)
@@ -204,13 +252,13 @@ def _create_runtime_container_sync(
             except container_runtime.ImageNotFound:
                 error_msg = f"Runtime version '{version_tag}' not found. The image {image_name} does not exist in the registry or locally."
                 log_error(error_msg)
-                set_error(container_name, error_msg, "create")
+                operations_state.set_error(container_name, error_msg, "create")
                 return None
         except Exception as e:
             log_warning(f"Failed to pull image, will try to use local image: {e}")
 
-        set_step(container_name, "creating_networks")
-        internal_network = create_internal_network(container_name)
+        operations_state.set_step(container_name, "creating_networks")
+        internal_network = container_runtime.create_internal_network(container_name)
 
         # List of (network, vnic_config) tuples for MACVLAN (Ethernet) only
         # WiFi vNICs use Proxy ARP Bridge which is set up after container starts
@@ -225,7 +273,7 @@ def _create_runtime_container_sync(
             parent_gateway = vnic_config.get("gateway")
 
             # Detect interface type and choose appropriate network method
-            interface_type = get_interface_type(parent_interface)
+            interface_type = interface_cache.get_interface_type(parent_interface)
             is_wifi = interface_type == "wifi"
 
             # Store for later use
@@ -244,8 +292,9 @@ def _create_runtime_container_sync(
             else:
                 # Ethernet interface - use MACVLAN (unique MAC per container)
                 log_info(f"Using MACVLAN for Ethernet interface {parent_interface}")
-                network = get_or_create_macvlan_network(
-                    parent_interface, parent_subnet, parent_gateway
+                network = container_runtime.get_or_create_macvlan_network(
+                    parent_interface, parent_subnet, parent_gateway,
+                    interface_cache=interface_cache,
                 )
                 vnic_config["_network_method"] = "macvlan"
                 macvlan_networks.append((network, vnic_config))
@@ -254,7 +303,7 @@ def _create_runtime_container_sync(
             if vnic_dns and isinstance(vnic_dns, list):
                 dns_servers.extend(vnic_dns)
 
-        set_step(container_name, "creating_container")
+        operations_state.set_step(container_name, "creating_container")
         log_info(f"Creating container {container_name}")
 
         networking_config = {}
@@ -421,7 +470,7 @@ def _create_runtime_container_sync(
             f"Runtime container {container_name} created successfully with {len(vnic_configs)} virtual NICs"
         )
 
-        devices_buffer = get_devices_usage_buffer()
+        devices_buffer = get_context().devices_usage_buffer
         devices_buffer.add_device(container_name)
         log_debug(f"Registered device {container_name} for usage data collection")
 
@@ -442,7 +491,7 @@ def _create_runtime_container_sync(
                         f"Will request DHCP for vNIC {vnic_name} (MAC: {mac_address}, PID: {container_pid})"
                     )
 
-        clear_state(container_name)
+        operations_state.clear_state(container_name)
 
         # Return both MACVLAN DHCP info and WiFi vNICs needing configuration
         return {
@@ -456,7 +505,7 @@ def _create_runtime_container_sync(
         import traceback
 
         log_error(f"Traceback: {traceback.format_exc()}")
-        set_error(container_name, str(e), "create")
+        operations_state.set_error(container_name, str(e), "create")
         return None
 
 
@@ -472,6 +521,7 @@ async def create_runtime_container(
     client_registry=None,
     interface_cache=None,
     network_commander=None,
+    operations_state=None,
 ):
     """
     Create a runtime container with MACVLAN or Proxy ARP Bridge networking for
@@ -495,11 +545,13 @@ async def create_runtime_container(
         client_registry: Optional ClientRepo adapter (defaults to singleton)
         interface_cache: Optional InterfaceCacheRepo adapter (defaults to singleton)
         network_commander: Optional NetworkCommanderRepo adapter (defaults to singleton)
+        operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    _, vnic_repo, serial_repo, _, _, network_commander = _resolve_deps(
+    _, vnic_repo, serial_repo, _, _, network_commander, operations_state = _resolve_deps(
         vnic_repo=vnic_repo,
         serial_repo=serial_repo,
         network_commander=network_commander,
+        operations_state=operations_state,
     )
 
     result = await asyncio.to_thread(
@@ -509,6 +561,7 @@ async def create_runtime_container(
         serial_repo=serial_repo,
         client_registry=client_registry,
         interface_cache=interface_cache,
+        operations_state=operations_state,
     )
 
     if result is None:
@@ -521,7 +574,7 @@ async def create_runtime_container(
 
     # Start DHCP for MACVLAN vNICs (Ethernet)
     if dhcp_vnics:
-        set_step(container_name, "starting_dhcp")
+        operations_state.set_step(container_name, "starting_dhcp")
         for vnic_name, mac_address, container_pid in dhcp_vnics:
             try:
                 await network_commander.start_dhcp(
@@ -534,7 +587,7 @@ async def create_runtime_container(
     # Configure WiFi vNICs with Proxy ARP Bridge via netmon
     # All proxy ARP operations go through netmon (which has host network + PID access)
     if wifi_vnics_to_configure:
-        set_step(container_name, "configuring_wifi_vnics")
+        operations_state.set_step(container_name, "configuring_wifi_vnics")
         for wifi_info in wifi_vnics_to_configure:
             vnic_name = wifi_info["vnic_name"]
             parent_interface = wifi_info["parent_interface"]

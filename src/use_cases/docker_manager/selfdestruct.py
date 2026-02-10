@@ -1,7 +1,5 @@
 from . import get_self_container
 from tools.logger import log_info, log_warning, log_error
-from tools.devices_usage_buffer import get_devices_usage_buffer
-from tools.operations_state import set_deleting, set_step, set_error
 from bootstrap import get_context
 import json
 import re
@@ -55,7 +53,7 @@ def _delete_runtime_container_for_selfdestruct(container_name, container_runtime
         raise
 
     try:
-        devices_buffer = get_devices_usage_buffer()
+        devices_buffer = get_context().devices_usage_buffer
         devices_buffer.remove_device(container_name)
     except Exception as e:
         log_warning(f"Error removing {container_name} from usage buffer: {e}")
@@ -287,7 +285,7 @@ def _delete_orchestrator_container(container_runtime):
         raise
 
 
-def start_self_destruct() -> bool:
+def start_self_destruct(*, operations_state=None) -> bool:
     """
     Initialize the self-destruct operation by setting the tracking state.
 
@@ -295,15 +293,18 @@ def start_self_destruct() -> bool:
         True if self-destruct was started successfully
         False if a self-destruct operation is already in progress
     """
-    if not set_deleting(ORCHESTRATOR_STATUS_ID):
+    if operations_state is None:
+        operations_state = get_context().operations_state
+
+    if not operations_state.set_deleting(ORCHESTRATOR_STATUS_ID):
         log_warning("Self-destruct operation already in progress")
         return False
 
-    set_step(ORCHESTRATOR_STATUS_ID, "starting")
+    operations_state.set_step(ORCHESTRATOR_STATUS_ID, "starting")
     return True
 
 
-def self_destruct(*, container_runtime=None, client_registry=None, vnic_repo=None):
+def self_destruct(*, container_runtime=None, client_registry=None, vnic_repo=None, operations_state=None):
     """
     Self-destruct the orchestrator by removing all managed resources.
 
@@ -326,8 +327,9 @@ def self_destruct(*, container_runtime=None, client_registry=None, vnic_repo=Non
         container_runtime: Optional ContainerRuntimeRepo adapter (defaults to singleton)
         client_registry: Optional ClientRepo adapter (defaults to singleton)
         vnic_repo: Optional VNICRepo adapter (defaults to singleton)
+        operations_state: Optional OperationsStateTracker (defaults to singleton)
     """
-    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo]):
+    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo, operations_state]):
 
         ctx = get_context()
         if container_runtime is None:
@@ -336,29 +338,31 @@ def self_destruct(*, container_runtime=None, client_registry=None, vnic_repo=Non
             client_registry = ctx.client_registry
         if vnic_repo is None:
             vnic_repo = ctx.vnic_repo
+        if operations_state is None:
+            operations_state = ctx.operations_state
 
     log_info("Self-destructing orchestrator...")
 
     try:
-        set_step(ORCHESTRATOR_STATUS_ID, "deleting_runtimes")
+        operations_state.set_step(ORCHESTRATOR_STATUS_ID, "deleting_runtimes")
         _delete_all_runtime_containers(container_runtime, client_registry, vnic_repo)
 
-        set_step(ORCHESTRATOR_STATUS_ID, "cleaning_networks")
+        operations_state.set_step(ORCHESTRATOR_STATUS_ID, "cleaning_networks")
         _cleanup_orchestrator_networks(container_runtime)
 
-        set_step(ORCHESTRATOR_STATUS_ID, "cleaning_proxy_arp")
+        operations_state.set_step(ORCHESTRATOR_STATUS_ID, "cleaning_proxy_arp")
         _cleanup_proxy_arp_veths()
 
-        set_step(ORCHESTRATOR_STATUS_ID, "deleting_netmon")
+        operations_state.set_step(ORCHESTRATOR_STATUS_ID, "deleting_netmon")
         _delete_netmon_container(container_runtime)
 
-        set_step(ORCHESTRATOR_STATUS_ID, "deleting_volume")
+        operations_state.set_step(ORCHESTRATOR_STATUS_ID, "deleting_volume")
         _delete_shared_volume(container_runtime)
 
-        set_step(ORCHESTRATOR_STATUS_ID, "removing_self")
+        operations_state.set_step(ORCHESTRATOR_STATUS_ID, "removing_self")
         _delete_orchestrator_container(container_runtime)
 
     except Exception as e:
         log_error(f"Self-destruct failed: {e}")
-        set_error(ORCHESTRATOR_STATUS_ID, str(e), "self_destruct")
+        operations_state.set_error(ORCHESTRATOR_STATUS_ID, str(e), "self_destruct")
         raise

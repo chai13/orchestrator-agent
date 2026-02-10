@@ -10,7 +10,6 @@ from .webrtc_controller import (
 )
 from bootstrap import get_context
 from tools.logger import *
-from tools.network_event_listener import network_event_listener
 from tools.dns_utils import (
     perform_dns_health_check,
     calculate_backoff,
@@ -35,7 +34,7 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
     client = None
     try:
         # Initialize composition root (creates all adapters)
-        get_context()
+        ctx = get_context()
 
         # Create fresh client with new HTTP session for DNS refresh
         client = await get_websocket_client(dns_ttl=dns_ttl)
@@ -47,7 +46,7 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         init_webrtc_controller(client)
 
         # Start network event listener
-        await network_event_listener.start()
+        await ctx.network_event_listener.start()
         log_info("Network event listener started")
 
         # Start WebRTC session manager background tasks

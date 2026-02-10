@@ -3,7 +3,6 @@ from tools.contract_validation import (
     BASE_DEVICE,
     StringType,
 )
-from tools.devices_usage_buffer import get_devices_usage_buffer
 from tools.utils import parse_period
 from bootstrap import get_context
 from use_cases.docker_manager.get_device_status import get_device_info
@@ -43,7 +42,7 @@ def init(client):
                 "error": f"Device {device_id} not found",
             }
 
-        devices_buffer = get_devices_usage_buffer()
+        devices_buffer = get_context().devices_usage_buffer
 
         cpu_start, cpu_end = parse_period(cpu_period)
         memory_start, memory_end = parse_period(memory_period)

@@ -1,8 +1,7 @@
 import os
 import socket
 from bootstrap import get_context
-from tools.logger import log_debug, log_info, log_warning
-from tools.devices_usage_buffer import get_devices_usage_buffer
+from tools.logger import log_debug, log_warning
 
 HOST_NAME = os.getenv("HOST_NAME", "orchestrator-agent-devcontainer")
 
@@ -65,23 +64,3 @@ def get_self_container(*, container_runtime=None):
 
     log_warning("Could not detect self container using any method")
     return None
-
-
-def _register_existing_clients_with_usage_buffer():
-    """
-    Register all existing clients with the devices usage buffer.
-    This is called at module load time to ensure existing containers
-    have their usage data collected from startup.
-    """
-    client_registry = get_context().client_registry
-    clients = client_registry.list_clients()
-    if not clients:
-        return
-
-    devices_buffer = get_devices_usage_buffer()
-    for client_name in clients:
-        devices_buffer.add_device(client_name)
-        log_info(f"Registered existing client {client_name} for usage data collection")
-
-
-_register_existing_clients_with_usage_buffer()

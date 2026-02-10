@@ -1,6 +1,6 @@
 from tools.contract_validation import BASE_MESSAGE
-from tools.network_event_listener import network_event_listener
 from tools.logger import log_info, log_debug
+from bootstrap import get_context
 from . import topic, validate_message
 
 NAME = "get_serial_devices"
@@ -36,7 +36,7 @@ def init(client):
         log_info("Retrieving list of available serial devices")
 
         # Get devices from the network event listener's cache
-        devices = network_event_listener.get_available_devices()
+        devices = get_context().network_event_listener.get_available_devices()
 
         # Format devices for response
         formatted_devices = []

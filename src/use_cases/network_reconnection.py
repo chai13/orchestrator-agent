@@ -1,7 +1,5 @@
 from typing import Optional
 from tools.logger import log_info, log_debug, log_warning, log_error
-from tools.interface_cache import get_interface_type
-from tools.docker_tools import get_or_create_macvlan_network
 from bootstrap import get_context
 
 
@@ -27,6 +25,7 @@ class NetworkReconnectionManager:
         ctx = get_context()
         container_runtime = ctx.container_runtime
         vnic_repo = ctx.vnic_repo
+        interface_cache = ctx.network_interface_cache
 
         try:
             all_vnic_configs = vnic_repo.load_configs()
@@ -47,7 +46,7 @@ class NetworkReconnectionManager:
                 log_warning(f"No subnet found for interface {interface}")
                 return
 
-            interface_type = get_interface_type(interface)
+            interface_type = interface_cache.get_interface_type(interface)
             is_wifi = interface_type == "wifi"
 
             log_info(
@@ -138,7 +137,9 @@ class NetworkReconnectionManager:
                     log_debug(f"Could not disconnect from old network {net_name}: {e}")
 
         # Create or get new MACVLAN network
-        new_network = get_or_create_macvlan_network(interface, new_subnet, new_gateway)
+        new_network = container_runtime.get_or_create_macvlan_network(
+            interface, new_subnet, new_gateway
+        )
 
         network_mode = vnic_config.get("network_mode", "dhcp")
         connect_kwargs = {}

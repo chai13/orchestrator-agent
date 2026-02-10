@@ -3,7 +3,6 @@ import json
 import os
 from typing import Optional, Callable, List
 from tools.logger import log_info, log_debug, log_warning, log_error
-from tools.interface_cache import INTERFACE_CACHE
 from tools.netmon_client import NetmonClient
 from use_cases.dhcp_manager import DHCPManager
 from use_cases.network_reconnection import NetworkReconnectionManager
@@ -25,12 +24,13 @@ class NetworkEventListener:
     - SerialDeviceManager: serial device matching and provisioning
     """
 
-    def __init__(self):
+    def __init__(self, interface_cache=None):
         self.socket_path = SOCKET_PATH
         self.running = False
         self.listener_task = None
         self.pending_changes = {}
         self.last_event_time = {}
+        self.interface_cache = interface_cache
 
         # Sub-managers
         self.netmon_client = NetmonClient()
@@ -163,12 +163,12 @@ class NetworkEventListener:
                     if ipv4_addresses:
                         subnet = ipv4_addresses[0].get("subnet")
 
-                        INTERFACE_CACHE[interface_name] = {
+                        self.interface_cache.set_interface(interface_name, {
                             "subnet": subnet,
                             "gateway": gateway,
                             "type": iface_type,
                             "addresses": ipv4_addresses,
-                        }
+                        })
 
                         log_debug(
                             f"Cached interface {interface_name}: "
@@ -179,11 +179,10 @@ class NetworkEventListener:
                         log_debug(
                             f"Interface {interface_name} has no IPv4 addresses, skipping cache"
                         )
-                        if interface_name in INTERFACE_CACHE:
-                            del INTERFACE_CACHE[interface_name]
-                            log_debug(
-                                f"Removed {interface_name} from cache (no addresses)"
-                            )
+                        self.interface_cache.remove_interface(interface_name)
+                        log_debug(
+                            f"Removed {interface_name} from cache (no addresses)"
+                        )
 
             elif event_type == "dhcp_update":
                 log_info("Received DHCP update event")
@@ -195,7 +194,8 @@ class NetworkEventListener:
                 interface = iface_data.get("interface")
                 ipv4_addresses = iface_data.get("ipv4_addresses", [])
                 gateway = iface_data.get("gateway")
-                existing_type = INTERFACE_CACHE.get(interface, {}).get("type", "ethernet")
+                all_interfaces = self.interface_cache.get_all_interfaces()
+                existing_type = all_interfaces.get(interface, {}).get("type", "ethernet")
                 iface_type = iface_data.get("type", existing_type)
 
                 if not interface:
@@ -208,12 +208,12 @@ class NetworkEventListener:
                     )
 
                     subnet = ipv4_addresses[0].get("subnet")
-                    INTERFACE_CACHE[interface] = {
+                    self.interface_cache.set_interface(interface, {
                         "subnet": subnet,
                         "gateway": gateway,
                         "type": iface_type,
                         "addresses": ipv4_addresses,
-                    }
+                    })
                     log_debug(
                         f"Updated cache for interface {interface}: subnet={subnet}, gateway={gateway}, type={iface_type}"
                     )
@@ -226,9 +226,8 @@ class NetworkEventListener:
                     log_debug(
                         f"Interface {interface} has no IPv4 addresses after change, skipping cache update"
                     )
-                    if interface in INTERFACE_CACHE:
-                        del INTERFACE_CACHE[interface]
-                        log_debug(f"Removed {interface} from cache (no addresses)")
+                    self.interface_cache.remove_interface(interface)
+                    log_debug(f"Removed {interface} from cache (no addresses)")
 
             elif event_type == "device_discovery":
                 log_info("Received device discovery event")
@@ -339,4 +338,3 @@ class NetworkEventListener:
         self.serial_device_manager.register_device_callback(callback)
 
 
-network_event_listener = NetworkEventListener()

@@ -1,4 +1,3 @@
-from tools.operations_state import get_state
 from tools.logger import log_debug, log_info, log_warning, log_error
 from bootstrap import get_context
 from datetime import datetime
@@ -118,6 +117,7 @@ def get_device_status_data(
     client_registry=None,
     vnic_repo=None,
     serial_repo=None,
+    operations_state=None,
 ) -> Dict[str, Any]:
     """
     Get the current status of a runtime container.
@@ -131,6 +131,7 @@ def get_device_status_data(
         client_registry: Optional ClientRepo adapter (defaults to singleton)
         vnic_repo: Optional VNICRepo adapter (defaults to singleton)
         serial_repo: Optional SerialRepo adapter (defaults to singleton)
+        operations_state: Optional OperationsStateTracker (defaults to singleton)
 
     Returns:
         Dictionary containing status information:
@@ -139,7 +140,7 @@ def get_device_status_data(
         - For non-existent containers: status="not_found"
         - For errors: status="error" with error message
     """
-    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo, serial_repo]):
+    if any(dep is None for dep in [container_runtime, client_registry, vnic_repo, serial_repo, operations_state]):
 
         ctx = get_context()
         if container_runtime is None:
@@ -150,6 +151,8 @@ def get_device_status_data(
             vnic_repo = ctx.vnic_repo
         if serial_repo is None:
             serial_repo = ctx.serial_repo
+        if operations_state is None:
+            operations_state = ctx.operations_state
     if not device_id or not isinstance(device_id, str) or not device_id.strip():
         log_error("Device ID is empty or invalid")
         return {
@@ -160,7 +163,7 @@ def get_device_status_data(
     log_debug(f"Retrieving status for container: {device_id}")
 
     try:
-        op_state = get_state(device_id)
+        op_state = operations_state.get_state(device_id)
         if op_state:
             log_debug(
                 f"Container {device_id} has tracked operation state: {op_state['status']}"
