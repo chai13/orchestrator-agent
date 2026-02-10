@@ -3,9 +3,10 @@
 FROM python:3.11-slim AS base
 WORKDIR /app
 
-# Install runtime deps only
+# Install runtime deps (libsrtp2-1 needed on armv7 where pylibsrtp is built from source)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
+    libsrtp2-1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
