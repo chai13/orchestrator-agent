@@ -13,7 +13,7 @@ from tools.contract_validation import (
     validate_contract_with_error_response,
 )
 from ..types import SessionState
-from ..data_channel import DataChannelHandler
+from ..data_channel import DataChannelHandler, DebugChannelHandler
 
 
 NAME = "webrtc:offer"
@@ -130,19 +130,29 @@ def init(client, session_manager, client_registry, http_client):
                     ice_state
                 )
 
-            # Set up data channel handler (browser creates the channel)
+            # Set up data channel handler (browser creates the channels)
             @pc.on("datachannel")
             def on_datachannel(channel):
+                label = channel.label
                 log_info(f"========== Data Channel Received ==========")
                 log_info(f"Session: {session_id}")
-                log_info(f"Channel label: {channel.label}")
+                log_info(f"Channel label: {label}")
                 log_info(f"Channel state: {channel.readyState}")
-                session_manager.set_data_channel(session_id, channel)
 
-                log_info(f"Creating DataChannelHandler for session {session_id}")
-                handler = DataChannelHandler(channel, session_id, session_manager, client_registry, http_client)
-                session_manager.set_channel_handler(session_id, handler)
-                log_info(f"DataChannelHandler created successfully")
+                if label == "data":
+                    session_manager.set_data_channel(session_id, channel)
+                    log_info(f"Creating DataChannelHandler for session {session_id}")
+                    handler = DataChannelHandler(channel, session_id, session_manager, client_registry, http_client)
+                    session_manager.set_channel_handler(session_id, handler)
+                    log_info(f"DataChannelHandler created successfully")
+                elif label == "debug":
+                    session_manager.set_debug_channel(session_id, channel)
+                    log_info(f"Creating DebugChannelHandler for session {session_id}")
+                    handler = DebugChannelHandler(channel, session_id, session_manager, client_registry)
+                    session_manager.set_debug_channel_handler(session_id, handler)
+                    log_info(f"DebugChannelHandler created successfully")
+                else:
+                    log_warning(f"Unknown data channel label '{label}' for session {session_id}, ignoring")
 
             # Set remote description (the offer from browser)
             log_info(f"Setting remote description (browser's offer)")

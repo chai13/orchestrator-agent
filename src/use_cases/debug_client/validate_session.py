@@ -27,6 +27,7 @@ def validate_debug_session(
     http_client,
     debug_socket,
     port=8443,
+    on_step=None,
 ):
     """Run a full debug protocol validation against a runtime container.
 
@@ -37,6 +38,7 @@ def validate_debug_session(
         http_client: HTTPClientRepoInterface - for REST authentication.
         debug_socket: DebugSocketRepoInterface - for Socket.IO debug session.
         port: Runtime HTTPS port (default 8443).
+        on_step: Optional callable(step_dict) invoked after each debug step completes.
 
     Returns:
         Dict with "status" ("success" or "error") and "steps" list containing
@@ -90,10 +92,14 @@ def validate_debug_session(
         # --- Step 3: DEBUG_GET_MD5 ---
         step = _send_and_log(debug_socket, "DEBUG_GET_MD5", build_get_md5())
         steps.append(step)
+        if on_step:
+            on_step(step)
 
         # --- Step 4: DEBUG_INFO ---
         step = _send_and_log(debug_socket, "DEBUG_INFO", build_get_info())
         steps.append(step)
+        if on_step:
+            on_step(step)
 
         variable_count = 0
         if step.get("parsed"):
@@ -105,6 +111,8 @@ def validate_debug_session(
             indexes = list(range(num_to_fetch))
             step = _send_and_log(debug_socket, "DEBUG_GET_LIST", build_get_list(indexes))
             steps.append(step)
+            if on_step:
+                on_step(step)
         else:
             log_info("No debug variables reported, skipping DEBUG_GET_LIST")
 
