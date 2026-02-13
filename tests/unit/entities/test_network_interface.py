@@ -1,3 +1,4 @@
+import pytest
 from entities.network_interface import NetworkInterface
 
 
@@ -50,3 +51,32 @@ class TestNetworkInterface:
         )
         rebuilt = NetworkInterface.from_dict(original.to_dict())
         assert rebuilt == original
+
+
+class TestNetworkInterfaceValidation:
+    def test_validate_passes_on_ethernet(self):
+        iface = NetworkInterface(type="ethernet")
+        iface.validate()  # should not raise
+
+    def test_validate_passes_on_wifi(self):
+        iface = NetworkInterface(type="wifi")
+        iface.validate()  # should not raise
+
+    def test_validate_raises_on_invalid_type(self):
+        iface = NetworkInterface(type="bluetooth")
+        with pytest.raises(ValueError, match="type"):
+            iface.validate()
+
+    def test_create_raises_on_invalid_data(self):
+        with pytest.raises(ValueError):
+            NetworkInterface.create(type="invalid")
+
+    def test_create_returns_valid_instance(self):
+        iface = NetworkInterface.create(type="wifi", subnet="10.0.0.0/8")
+        assert iface.type == "wifi"
+        assert iface.subnet == "10.0.0.0/8"
+
+    def test_from_dict_does_not_validate(self):
+        data = {"type": "invalid_type"}
+        iface = NetworkInterface.from_dict(data)
+        assert iface.type == "invalid_type"

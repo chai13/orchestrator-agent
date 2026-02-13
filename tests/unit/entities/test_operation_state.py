@@ -1,3 +1,4 @@
+import pytest
 from entities.operation_state import OperationState
 
 
@@ -47,3 +48,32 @@ class TestOperationState:
         )
         rebuilt = OperationState.from_dict(original.to_dict())
         assert rebuilt == original
+
+
+class TestOperationStateValidation:
+    def test_validate_passes_on_valid_data(self):
+        state = OperationState(status="creating", operation="create")
+        state.validate()  # should not raise
+
+    def test_validate_raises_on_invalid_status(self):
+        state = OperationState(status="running", operation="create")
+        with pytest.raises(ValueError, match="status"):
+            state.validate()
+
+    def test_validate_raises_on_invalid_operation(self):
+        state = OperationState(status="creating", operation="update")
+        with pytest.raises(ValueError, match="operation"):
+            state.validate()
+
+    def test_create_raises_on_invalid_data(self):
+        with pytest.raises(ValueError):
+            OperationState.create(status="invalid", operation="create")
+
+    def test_create_returns_valid_instance(self):
+        state = OperationState.create(status="creating", operation="create")
+        assert state.status == "creating"
+
+    def test_from_dict_does_not_validate(self):
+        data = {"status": "invalid", "operation": "bad"}
+        state = OperationState.from_dict(data)
+        assert state.status == "invalid"

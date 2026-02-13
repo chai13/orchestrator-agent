@@ -1,3 +1,4 @@
+import pytest
 from entities.vnic_config import VnicConfig
 
 
@@ -59,6 +60,13 @@ class TestVnicConfigToDict:
         assert d["dns"] == ["8.8.8.8"]
 
 
+class TestVnicConfigInternalFields:
+    def test_internal_fields_contains_expected_fields(self):
+        assert VnicConfig._INTERNAL_FIELDS == frozenset({
+            "_interface_type", "_is_wifi", "_network_method", "_proxy_arp_config"
+        })
+
+
 class TestVnicConfigFromDict:
     def test_ignores_unknown_keys(self):
         data = {"name": "test", "unknown_key": "ignored", "another": 42}
@@ -88,3 +96,31 @@ class TestVnicConfigFromDict:
         rebuilt = VnicConfig.from_dict(d)
         assert rebuilt._is_wifi is True
         assert rebuilt._interface_type == "wifi"
+
+
+class TestVnicConfigValidation:
+    def test_validate_passes_on_valid_data(self):
+        config = VnicConfig(network_mode="dhcp")
+        config.validate()  # should not raise
+
+    def test_validate_passes_on_static(self):
+        config = VnicConfig(network_mode="static")
+        config.validate()  # should not raise
+
+    def test_validate_raises_on_invalid_network_mode(self):
+        config = VnicConfig(network_mode="manual")
+        with pytest.raises(ValueError, match="network_mode"):
+            config.validate()
+
+    def test_create_raises_on_invalid_data(self):
+        with pytest.raises(ValueError):
+            VnicConfig.create(network_mode="invalid")
+
+    def test_create_returns_valid_instance(self):
+        config = VnicConfig.create(name="eth0_vnic", network_mode="dhcp")
+        assert config.name == "eth0_vnic"
+
+    def test_from_dict_does_not_validate(self):
+        data = {"network_mode": "invalid"}
+        config = VnicConfig.from_dict(data)
+        assert config.network_mode == "invalid"

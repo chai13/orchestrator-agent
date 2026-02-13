@@ -1,3 +1,4 @@
+import pytest
 from entities.serial_config import SerialConfig
 
 
@@ -60,3 +61,28 @@ class TestSerialConfig:
         )
         rebuilt = SerialConfig.from_dict(original.to_dict())
         assert rebuilt == original
+
+
+class TestSerialConfigValidation:
+    def test_validate_passes_on_valid_data(self):
+        config = SerialConfig(status="connected")
+        config.validate()  # should not raise
+
+    def test_validate_raises_on_invalid_status(self):
+        config = SerialConfig(status="unknown")
+        with pytest.raises(ValueError, match="status"):
+            config.validate()
+
+    def test_create_raises_on_invalid_data(self):
+        with pytest.raises(ValueError):
+            SerialConfig.create(status="bad")
+
+    def test_create_returns_valid_instance(self):
+        config = SerialConfig.create(name="modbus", status="connected")
+        assert config.name == "modbus"
+        assert config.status == "connected"
+
+    def test_from_dict_does_not_validate(self):
+        data = {"status": "invalid_status"}
+        config = SerialConfig.from_dict(data)
+        assert config.status == "invalid_status"
