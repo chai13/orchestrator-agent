@@ -16,6 +16,7 @@ from repos import (
     NetmonClientRepo,
     SocketRepo,
 )
+from repos.debug_socket_repo import DebugSocketRepo
 from tools.operations_state import OperationsStateTracker
 from tools.devices_usage_buffer import DevicesUsageBuffer
 from tools.network_event_listener import NetworkEventListener
@@ -54,6 +55,10 @@ class AppContext:
             reconnection_manager=self.reconnection_manager,
             serial_device_manager=self.serial_device_manager,
         )
+
+        # Factory callables for creating fresh repo instances per debug session
+        self.http_client_factory = HTTPClientRepo
+        self.debug_socket_factory = DebugSocketRepo
 
         self.static_system_info = get_static_system_info()
 

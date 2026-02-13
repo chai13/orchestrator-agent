@@ -19,8 +19,6 @@ Message Protocol:
 """
 
 from tools.logger import log_info, log_debug, log_error, log_warning
-from repos.debug_socket_repo import DebugSocketRepo
-from repos.http_client_repo import HTTPClientRepo
 from use_cases.debug_client.validate_session import validate_debug_session
 import json
 import asyncio
@@ -34,7 +32,8 @@ class DebugChannelHandler:
     runs the debug session, and streams each step result back to the browser.
     """
 
-    def __init__(self, data_channel, session_id, session_manager, client_registry):
+    def __init__(self, data_channel, session_id, session_manager, client_registry,
+                 *, http_client_factory, debug_socket_factory):
         """
         Initialize debug channel handler.
 
@@ -43,11 +42,15 @@ class DebugChannelHandler:
             session_id: Associated WebRTC session ID
             session_manager: WebRTCSessionManager instance
             client_registry: ClientRepo instance for device IP lookups
+            http_client_factory: Callable returning an HTTPClientRepo instance
+            debug_socket_factory: Callable returning a DebugSocketRepo instance
         """
         self.channel = data_channel
         self.session_id = session_id
         self.session_manager = session_manager
         self.client_registry = client_registry
+        self._http_client_factory = http_client_factory
+        self._debug_socket_factory = debug_socket_factory
         self._closed = False
         self._setup_handlers()
 
@@ -102,7 +105,7 @@ class DebugChannelHandler:
         """
         Handle debug_start message.
 
-        Creates fresh DebugSocketRepo and HTTPClientRepo instances,
+        Creates fresh repo instances via the injected factories,
         runs the debug session in a worker thread, and streams results
         back to the browser.
         """
@@ -137,8 +140,8 @@ class DebugChannelHandler:
 
         try:
             # Create fresh repos for this debug session
-            http_client = HTTPClientRepo()
-            debug_socket = DebugSocketRepo()
+            http_client = self._http_client_factory()
+            debug_socket = self._debug_socket_factory()
 
             result = await asyncio.to_thread(
                 validate_debug_session,

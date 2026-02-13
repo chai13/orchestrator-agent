@@ -44,7 +44,11 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
 
         # Initialize WebRTC controller (signaling topics)
         session_manager = WebRTCSessionManager()
-        init_webrtc_controller(client, session_manager, ctx.client_registry, ctx.http_client)
+        init_webrtc_controller(
+            client, session_manager, ctx.client_registry, ctx.http_client,
+            http_client_factory=ctx.http_client_factory,
+            debug_socket_factory=ctx.debug_socket_factory,
+        )
 
         # Start network event listener
         await ctx.network_event_listener.start()
