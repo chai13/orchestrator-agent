@@ -22,7 +22,7 @@ class TestVNICRepo:
         repo = self._make_repo(tmp_path)
         repo.save_configs("plc1", [{"name": "vnic1"}])
         repo.save_configs("plc2", [{"name": "vnic2"}])
-        all_configs = repo.load_configs()
+        all_configs = repo.load_all_configs()
         assert "plc1" in all_configs
         assert "plc2" in all_configs
 
@@ -40,7 +40,7 @@ class TestVNICRepo:
 
     def test_load_all_empty(self, tmp_path):
         repo = self._make_repo(tmp_path)
-        assert repo.load_configs() == {}
+        assert repo.load_all_configs() == {}
 
     def test_delete_nonexistent(self, tmp_path):
         repo = self._make_repo(tmp_path)
