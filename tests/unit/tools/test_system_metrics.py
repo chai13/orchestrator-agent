@@ -1,6 +1,7 @@
 import time
 from unittest.mock import patch, MagicMock
 
+import tools.system_metrics as sm_mod
 from tools.system_metrics import (
     get_cpu_usage,
     get_memory_usage,
@@ -12,6 +13,9 @@ from tools.system_metrics import (
     _iter_disk_usage,
     _SKIP_FSTYPES,
 )
+
+# Ensure initialized with real psutil before any mocked tests run
+sm_mod._ensure_initialized()
 
 
 class TestGetCpuUsage:

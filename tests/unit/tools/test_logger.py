@@ -1,6 +1,7 @@
 import logging
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
+import tools.logger as logger_mod
 from tools.logger import (
     log_info,
     log_error,
@@ -9,7 +10,11 @@ from tools.logger import (
     log_critical,
     set_log_level,
     LOGGER,
+    _ensure_file_handlers,
 )
+
+# Prevent lazy file handler init from creating real files during most tests
+logger_mod._file_handlers_initialized = True
 
 
 class TestLogFunctions:
@@ -42,6 +47,51 @@ class TestLogFunctions:
         log_critical("critical message")
         mock_critical.assert_called_once()
         assert "critical message" in mock_critical.call_args[0][0]
+
+
+class TestEnsureFileHandlers:
+    @patch("tools.logger.logging.FileHandler")
+    @patch("tools.logger.os.makedirs")
+    def test_creates_handlers_on_first_call(self, mock_makedirs, mock_fh_cls):
+        """_ensure_file_handlers creates debug and regular file handlers."""
+        # Reset the flag so it actually runs
+        logger_mod._file_handlers_initialized = False
+
+        # Remove any existing file handlers from previous runs
+        original_handlers = list(LOGGER.handlers)
+        for h in original_handlers:
+            if h.name in ("debugger_handler", "regular_handler"):
+                LOGGER.removeHandler(h)
+
+        mock_handler = MagicMock()
+        mock_fh_cls.return_value = mock_handler
+
+        try:
+            _ensure_file_handlers()
+
+            assert mock_makedirs.call_count == 2
+            assert mock_fh_cls.call_count == 2
+            # Handlers were added to LOGGER
+            handler_names = [h.name for h in LOGGER.handlers]
+            assert "debugger_handler" in handler_names or mock_handler.set_name.call_count == 2
+        finally:
+            # Restore: remove mock handlers, re-add originals, reset flag
+            for h in list(LOGGER.handlers):
+                if h not in original_handlers:
+                    LOGGER.removeHandler(h)
+            for h in original_handlers:
+                if h not in LOGGER.handlers:
+                    LOGGER.addHandler(h)
+            logger_mod._file_handlers_initialized = True
+
+    def test_noop_when_already_initialized(self):
+        """_ensure_file_handlers returns immediately when already initialized."""
+        logger_mod._file_handlers_initialized = True
+        handler_count_before = len(LOGGER.handlers)
+
+        _ensure_file_handlers()
+
+        assert len(LOGGER.handlers) == handler_count_before
 
 
 class TestSetLogLevel:
