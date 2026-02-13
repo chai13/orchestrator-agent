@@ -57,13 +57,14 @@ class TestDeleteRuntimeContainerForSelfdestruct:
         runtime = _make_runtime()
         vnic_repo = MagicMock()
         buffer = MagicMock()
+        socket_repo = MagicMock()
 
-        _delete_runtime_container_for_selfdestruct("plc1", runtime, vnic_repo, buffer)
+        _delete_runtime_container_for_selfdestruct("plc1", runtime, vnic_repo, buffer, socket_repo)
 
         mock_stop.assert_called_once_with("plc1", container_runtime=runtime)
         buffer.remove_device.assert_called_once_with("plc1")
         vnic_repo.delete_configs.assert_called_once_with("plc1")
-        mock_remove_net.assert_called_once_with("plc1", container_runtime=runtime, disconnect_all=True)
+        mock_remove_net.assert_called_once_with("plc1", container_runtime=runtime, socket_repo=socket_repo, disconnect_all=True)
 
     @patch("use_cases.docker_manager.selfdestruct.remove_internal_network")
     @patch("use_cases.docker_manager.selfdestruct.stop_and_remove_container")
@@ -74,7 +75,7 @@ class TestDeleteRuntimeContainerForSelfdestruct:
         buffer = MagicMock()
         buffer.remove_device.side_effect = RuntimeError("buffer error")
 
-        _delete_runtime_container_for_selfdestruct("plc1", runtime, vnic_repo, buffer)
+        _delete_runtime_container_for_selfdestruct("plc1", runtime, vnic_repo, buffer, MagicMock())
 
         vnic_repo.delete_configs.assert_called_once()
         mock_remove_net.assert_called_once()
@@ -88,7 +89,7 @@ class TestDeleteRuntimeContainerForSelfdestruct:
         vnic_repo.delete_configs.side_effect = RuntimeError("vnic error")
         buffer = MagicMock()
 
-        _delete_runtime_container_for_selfdestruct("plc1", runtime, vnic_repo, buffer)
+        _delete_runtime_container_for_selfdestruct("plc1", runtime, vnic_repo, buffer, MagicMock())
 
         mock_remove_net.assert_called_once()
 
@@ -103,7 +104,7 @@ class TestDeleteAllRuntimeContainers:
         vnic_repo = MagicMock()
         buffer = MagicMock()
 
-        _delete_all_runtime_containers(runtime, registry, vnic_repo, buffer)
+        _delete_all_runtime_containers(runtime, registry, vnic_repo, buffer, MagicMock())
 
         assert mock_delete.call_count == 2
         assert registry.remove_client.call_count == 2
@@ -117,7 +118,7 @@ class TestDeleteAllRuntimeContainers:
         vnic_repo = MagicMock()
         buffer = MagicMock()
 
-        _delete_all_runtime_containers(runtime, registry, vnic_repo, buffer)
+        _delete_all_runtime_containers(runtime, registry, vnic_repo, buffer, MagicMock())
 
         mock_delete.assert_not_called()
 
@@ -320,7 +321,7 @@ class TestDeleteOrchestratorContainer:
         self_container.name = "orchestrator_agent"
         mock_get_self.return_value = self_container
 
-        _delete_orchestrator_container(runtime)
+        _delete_orchestrator_container(runtime, MagicMock())
 
         self_container.remove.assert_called_once_with(force=True)
 
@@ -331,7 +332,7 @@ class TestDeleteOrchestratorContainer:
         mock_get_self.return_value = None
 
         with pytest.raises(RuntimeError, match="Could not detect"):
-            _delete_orchestrator_container(runtime)
+            _delete_orchestrator_container(runtime, MagicMock())
 
     @patch("use_cases.docker_manager.selfdestruct.get_self_container")
     def test_remove_not_found_raises(self, mock_get_self):
@@ -343,7 +344,7 @@ class TestDeleteOrchestratorContainer:
         mock_get_self.return_value = self_container
 
         with pytest.raises(_NotFoundError):
-            _delete_orchestrator_container(runtime)
+            _delete_orchestrator_container(runtime, MagicMock())
 
     @patch("use_cases.docker_manager.selfdestruct.get_self_container")
     def test_remove_generic_exception_raises(self, mock_get_self):
@@ -355,7 +356,7 @@ class TestDeleteOrchestratorContainer:
         mock_get_self.return_value = self_container
 
         with pytest.raises(RuntimeError, match="remove error"):
-            _delete_orchestrator_container(runtime)
+            _delete_orchestrator_container(runtime, MagicMock())
 
 
 class TestSelfDestruct:
@@ -380,6 +381,7 @@ class TestSelfDestruct:
         vnic_repo = MagicMock()
         ops = MagicMock()
         buffer = MagicMock()
+        socket_repo = MagicMock()
 
         self_destruct(
             container_runtime=runtime,
@@ -387,14 +389,15 @@ class TestSelfDestruct:
             vnic_repo=vnic_repo,
             operations_state=ops,
             devices_usage_buffer=buffer,
+            socket_repo=socket_repo,
         )
 
-        mock_delete_all.assert_called_once_with(runtime, registry, vnic_repo, buffer)
+        mock_delete_all.assert_called_once_with(runtime, registry, vnic_repo, buffer, socket_repo)
         mock_cleanup_nets.assert_called_once_with(runtime)
         mock_cleanup_veths.assert_called_once()
         mock_delete_netmon.assert_called_once_with(runtime)
         mock_delete_vol.assert_called_once_with(runtime)
-        mock_delete_orch.assert_called_once_with(runtime)
+        mock_delete_orch.assert_called_once_with(runtime, socket_repo)
 
         # Verify steps were set
         ops.set_step.assert_any_call(ORCHESTRATOR_STATUS_ID, "deleting_runtimes")
@@ -409,6 +412,7 @@ class TestSelfDestruct:
         vnic_repo = MagicMock()
         ops = MagicMock()
         buffer = MagicMock()
+        socket_repo = MagicMock()
         mock_delete_all.side_effect = RuntimeError("Docker error")
 
         with pytest.raises(RuntimeError):
@@ -418,6 +422,7 @@ class TestSelfDestruct:
                 vnic_repo=vnic_repo,
                 operations_state=ops,
                 devices_usage_buffer=buffer,
+                socket_repo=socket_repo,
             )
 
         ops.set_error.assert_called_once_with(

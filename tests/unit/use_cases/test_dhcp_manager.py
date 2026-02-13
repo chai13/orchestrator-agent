@@ -24,17 +24,17 @@ class TestHandleDhcpUpdate:
     async def test_incomplete_data_returns_early(self):
         """Missing required fields returns without saving."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {}
+        mgr.vnic_repo.load_all_configs.return_value = {}
 
         await mgr.handle_dhcp_update({"container_name": "plc1"})
 
-        mgr.vnic_repo.load_configs.assert_not_called()
+        mgr.vnic_repo.load_all_configs.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_updates_cache_and_vnic_config(self):
         """Updates dhcp_ip_cache and persists to vnic_repo."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "eth_vnic", "network_mode": "dhcp"}]
         }
 
@@ -56,7 +56,7 @@ class TestHandleDhcpUpdate:
     async def test_saves_proxy_arp_config(self):
         """proxy_arp_config from data is saved to vnic_config."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "wifi_vnic"}]
         }
 
@@ -75,7 +75,7 @@ class TestHandleDhcpUpdate:
     async def test_invokes_callbacks(self):
         """Registered callbacks are called with update data."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {}
+        mgr.vnic_repo.load_all_configs.return_value = {}
 
         sync_cb = MagicMock()
         async_cb = AsyncMock()
@@ -91,7 +91,7 @@ class TestHandleDhcpUpdate:
     async def test_callback_exception_handled(self):
         """Exception in DHCP update callback is handled gracefully."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {}
+        mgr.vnic_repo.load_all_configs.return_value = {}
 
         failing_cb = MagicMock(side_effect=RuntimeError("callback error"))
         mgr.netmon_client.dhcp_update_callbacks = [failing_cb]
@@ -107,7 +107,7 @@ class TestHandleDhcpUpdate:
     async def test_container_not_in_configs(self):
         """Container not in vnic_repo configs → cache updated, no save."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {}
+        mgr.vnic_repo.load_all_configs.return_value = {}
 
         await mgr.handle_dhcp_update({
             "container_name": "plc1",
@@ -202,7 +202,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_no_vnic_configs(self):
         """Empty configs → early return, no DHCP started."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {}
+        mgr.vnic_repo.load_all_configs.return_value = {}
 
         await mgr.resync_dhcp_for_existing_containers()
 
@@ -212,7 +212,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_skips_static_vnics(self):
         """Static network_mode vNICs skipped."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "static", "parent_interface": "eth0"}]
         }
 
@@ -224,7 +224,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_skips_non_running_containers(self):
         """Non-running containers skipped."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -239,7 +239,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_starts_dhcp_for_macvlan(self):
         """Running container with MACVLAN gets DHCP started via netmon."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -265,7 +265,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_container_not_found_skipped(self):
         """NotFoundError for container is handled gracefully."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         mgr.container_runtime.get_container.side_effect = _NotFoundError
@@ -277,7 +277,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_proxy_arp_vnic_uses_wifi_dhcp(self):
         """WiFi/Proxy ARP vNIC uses request_wifi_dhcp instead of start_dhcp."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "wifi_v1",
                 "network_mode": "dhcp",
@@ -301,7 +301,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_failed_dhcp_added_to_pending(self):
         """Failed DHCP resync adds entry to pending_dhcp_resyncs."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -326,7 +326,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_container_pid_zero_skipped(self):
         """Container with PID <= 0 is skipped."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -343,7 +343,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_proxy_arp_dhcp_resync_fails_adds_pending(self):
         """Proxy ARP DHCP resync failure adds to pending with is_proxy_arp=True."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "wifi_v1",
                 "network_mode": "dhcp",
@@ -367,7 +367,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_no_mac_for_macvlan_skipped(self):
         """No MAC found for macvlan network → skip."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -391,7 +391,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_mac_mismatch_reconnect_verified(self):
         """MAC mismatch → disconnect + reconnect with persisted MAC, verified."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "v1",
                 "network_mode": "dhcp",
@@ -455,7 +455,7 @@ class TestResyncDhcpForExistingContainers:
             "mac_address": "02:00:00:00:00:AA",
             "ip": "10.0.0.50/24",
         }
-        mgr.vnic_repo.load_configs.return_value = {"plc1": [vnic_config]}
+        mgr.vnic_repo.load_all_configs.return_value = {"plc1": [vnic_config]}
         container = MagicMock()
         container.status = "running"
         container.attrs = {
@@ -501,7 +501,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_mac_mismatch_not_verified_no_fallback_mac(self):
         """MAC not verified and no fallback MAC → uses persisted MAC."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "v1",
                 "network_mode": "dhcp",
@@ -561,7 +561,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_inner_exception_per_vnic(self):
         """Generic exception per-vnic during resync is handled (lines 276-277)."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -576,7 +576,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_mac_mismatch_not_verified_fallback(self):
         """MAC mismatch → reconnect but MAC not verified, falls back to actual."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "v1",
                 "network_mode": "dhcp",
@@ -613,7 +613,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_mac_mismatch_reconnect_exception(self):
         """MAC enforcement exception falls back to actual MAC."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "v1",
                 "network_mode": "dhcp",
@@ -649,7 +649,7 @@ class TestResyncDhcpForExistingContainers:
         """No persisted MAC → stores actual MAC address."""
         mgr = _make_manager()
         vnic_config = {"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}
-        mgr.vnic_repo.load_configs.return_value = {"plc1": [vnic_config]}
+        mgr.vnic_repo.load_all_configs.return_value = {"plc1": [vnic_config]}
         container = MagicMock()
         container.status = "running"
         container.attrs = {
@@ -678,7 +678,7 @@ class TestResyncDhcpForExistingContainers:
             "dhcp_ip": "192.168.1.100",
             "dhcp_gateway": "192.168.1.1",
         }
-        mgr.vnic_repo.load_configs.return_value = {"plc1": [vnic_config]}
+        mgr.vnic_repo.load_all_configs.return_value = {"plc1": [vnic_config]}
         container = MagicMock()
         container.status = "running"
         container.attrs = {
@@ -701,7 +701,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_container_not_found_during_resync_inner(self):
         """NotFoundError during inner resync loop is handled (line 276-277)."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         mgr.container_runtime.get_container.side_effect = _NotFoundError
@@ -714,7 +714,7 @@ class TestResyncDhcpForExistingContainers:
     async def test_outer_exception_in_resync(self):
         """Outer exception in resync_dhcp_for_existing_containers logs error."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.side_effect = RuntimeError("db error")
+        mgr.vnic_repo.load_all_configs.side_effect = RuntimeError("db error")
 
         # Should not raise
         await mgr.resync_dhcp_for_existing_containers()
@@ -746,7 +746,7 @@ class TestDhcpRetryLoop:
             },
         }
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         mgr.netmon_client.start_dhcp = AsyncMock(return_value={"success": True})
@@ -780,7 +780,7 @@ class TestDhcpRetryLoop:
             },
         }
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
         mgr.netmon_client.start_dhcp = AsyncMock(return_value={"success": False})
@@ -836,7 +836,7 @@ class TestDhcpRetryLoop:
         container = MagicMock()
         container.status = "running"
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {"plc1": []}
+        mgr.vnic_repo.load_all_configs.return_value = {"plc1": []}
 
         await mgr.dhcp_retry_loop()
 
@@ -859,7 +859,7 @@ class TestDhcpRetryLoop:
         container = MagicMock()
         container.status = "running"
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "static", "parent_interface": "eth0"}]
         }
 
@@ -885,7 +885,7 @@ class TestDhcpRetryLoop:
         container.status = "running"
         container.attrs = {"State": {"Pid": 0}}
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
 
@@ -919,7 +919,7 @@ class TestDhcpRetryLoop:
         container.status = "running"
         container.attrs = {"State": {"Pid": 1234}}
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "wifi_v1", "network_mode": "dhcp", "parent_interface": "wlan0"}]
         }
         mgr.netmon_client.request_wifi_dhcp = AsyncMock(return_value={"success": True})
@@ -947,7 +947,7 @@ class TestDhcpRetryLoop:
         container.status = "running"
         container.attrs = {"State": {"Pid": 1234}}
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "wifi_v1", "network_mode": "dhcp", "parent_interface": "wlan0"}]
         }
         mgr.netmon_client.request_wifi_dhcp = AsyncMock(return_value={"success": False, "error": "timeout"})
@@ -983,7 +983,7 @@ class TestDhcpRetryLoop:
             "NetworkSettings": {"Networks": {"bridge": {"MacAddress": "02:00:00:00:00:01"}}},
         }
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0"}]
         }
 
@@ -1022,7 +1022,7 @@ class TestDhcpRetryLoop:
             },
         }
         mgr.container_runtime.get_container.return_value = container
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "network_mode": "dhcp", "parent_interface": "eth0", "mac_address": "02:00:00:00:00:AA"}]
         }
         mgr.netmon_client.start_dhcp = AsyncMock(return_value={"success": True})

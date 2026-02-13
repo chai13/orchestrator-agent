@@ -25,7 +25,7 @@ class TestReconnectContainers:
     async def test_no_vnic_configs(self):
         """Empty configs → early return."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {}
+        mgr.vnic_repo.load_all_configs.return_value = {}
 
         await mgr.reconnect_containers("eth0", {"ipv4_addresses": [{"subnet": "192.168.1.0/24"}], "gateway": "192.168.1.1"})
 
@@ -35,7 +35,7 @@ class TestReconnectContainers:
     async def test_no_ipv4_addresses(self):
         """No IPv4 addresses → early return."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "parent_interface": "eth0"}]
         }
 
@@ -47,7 +47,7 @@ class TestReconnectContainers:
     async def test_no_subnet(self):
         """Missing subnet → early return."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "parent_interface": "eth0"}]
         }
 
@@ -59,7 +59,7 @@ class TestReconnectContainers:
     async def test_skips_non_matching_interface(self):
         """vNICs on different interfaces are skipped."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "parent_interface": "eth1"}]
         }
 
@@ -75,7 +75,7 @@ class TestReconnectContainers:
         """NotFoundError handled gracefully."""
         mgr = _make_manager()
         mgr.interface_cache.get_interface_type.return_value = "ethernet"
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "parent_interface": "eth0"}]
         }
         mgr.container_runtime.get_container.side_effect = _NotFoundError
@@ -91,7 +91,7 @@ class TestReconnectContainers:
         """Generic exception during reconnect for specific container is handled."""
         mgr = _make_manager()
         mgr.interface_cache.get_interface_type.return_value = "ethernet"
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "parent_interface": "eth0"}]
         }
         mgr.container_runtime.get_container.side_effect = RuntimeError("Docker error")
@@ -106,7 +106,7 @@ class TestReconnectContainers:
     async def test_outer_exception_in_reconnect_containers(self):
         """Outer exception wrapping reconnect_containers is handled (lines 88-89)."""
         mgr = _make_manager()
-        mgr.vnic_repo.load_configs.side_effect = RuntimeError("db error")
+        mgr.vnic_repo.load_all_configs.side_effect = RuntimeError("db error")
 
         # Should not raise
         await mgr.reconnect_containers("eth0", {
@@ -119,7 +119,7 @@ class TestReconnectContainers:
         """Ethernet interface dispatches to _reconnect_macvlan_vnic."""
         mgr = _make_manager()
         mgr.interface_cache.get_interface_type.return_value = "ethernet"
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{"name": "v1", "parent_interface": "eth0"}]
         }
         container = MagicMock()
@@ -143,7 +143,7 @@ class TestReconnectContainers:
         """WiFi interface dispatches to _reconnect_wifi_vnic."""
         mgr = _make_manager()
         mgr.interface_cache.get_interface_type.return_value = "wifi"
-        mgr.vnic_repo.load_configs.return_value = {
+        mgr.vnic_repo.load_all_configs.return_value = {
             "plc1": [{
                 "name": "wifi_v1",
                 "parent_interface": "wlan0",
