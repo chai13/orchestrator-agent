@@ -242,9 +242,15 @@ class DebugChannelHandler:
 
             if result.get("success"):
                 data = result.get("data", {})
-                raw = result.get("raw", "")
 
-                if command_type == "get_md5":
+                # Check for protocol-level errors (non-SUCCESS status)
+                sname = data.get("status_name", "")
+                if sname and sname != "SUCCESS":
+                    self._send_message({
+                        "type": "debug_error",
+                        "error": sname,
+                    })
+                elif command_type == "get_md5":
                     self._send_message({
                         "type": "debug_md5_response",
                         "md5": data.get("md5", ""),
