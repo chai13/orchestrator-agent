@@ -186,6 +186,39 @@ Runtime Container (/api/debug namespace)
 
 **Polling pattern:** The browser polls at 200ms intervals with `debug_get_list` containing batched variable indexes (max 60 per request). The agent returns raw hex variable data for the browser to parse.
 
+### Debug HTTP Fallback
+
+When the WebRTC DataChannel is unavailable (restrictive NAT, firewall), debug commands fall back to the existing `run_command` WebSocket topic. The cloud server requires zero changes — it already passes `data: Record<string, any>` through untouched.
+
+**Architecture (HTTP path):**
+```
+Browser (HTTP POST /orchestrators/run-command)
+    ↓ { method: "POST", api: "debug", data: { type: "debug_get_list", indexes: [...] } }
+Cloud Server (passes through via WebSocket)
+    ↓ run_command topic
+run_command.py (controller layer) — routes api=="debug" to DebugSessionManager
+    ↓
+DebugSessionManager (controller layer) — persistent sessions keyed by device_id
+    ↓ routes to _handle_start / _handle_command / _handle_stop
+run_debug_command (use_case layer) — same as WebRTC path
+    ↓
+DebugSocketRepo (repo layer) — same as WebRTC path
+    ↓
+Runtime Container (/api/debug namespace)
+```
+
+**Key file:**
+- `src/controllers/websocket_controller/debug_session_manager.py` — HTTP-path session manager, mirrors `DebugChannelHandler` logic
+
+**Differences from WebRTC path:**
+- Sessions keyed by `device_id` (not WebRTC session ID) — one session per device
+- Thread-safe via `threading.Lock` (runs in `asyncio.to_thread`, cleanup runs on event loop)
+- Background cleanup loop every 60s disconnects sessions idle >5 minutes
+- Browser polls at 2s (vs 200ms for WebRTC) to avoid overloading HTTP path
+- Response is synchronous: `run_command` returns `{"status": "success", "debug_response": {...}}`
+
+**Transport selection (browser):** `sendDebugMessage` tries WebRTC DataChannel first. If the channel is not open, it wraps the message in an HTTP `run_command` request and feeds the response into the same `onDebugMessage` pipeline. Polling interval adjusts automatically (200ms ↔ 2s) and switches back to WebRTC when the DataChannel recovers.
+
 ## Important Files
 
 - `src/index.py` - Entry point with reconnection loop
