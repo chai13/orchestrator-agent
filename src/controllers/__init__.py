@@ -58,16 +58,20 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         await start_webrtc_controller(session_manager)
         log_info("WebRTC controller started")
 
+        # Start debug session manager (HTTP fallback for debug commands)
+        await ctx.debug_session_manager.start()
+
         await client.connect(
             f"https://{server_url}",
         )
         log_info(f"Connected to WebSocket server at {server_url}")
         await client.wait()
     finally:
-        # Cleanup WebRTC controller on disconnect
+        # Cleanup controllers on disconnect
         log_info("Cleaning up controllers...")
+        await ctx.debug_session_manager.stop()
         await stop_webrtc_controller(session_manager)
-        log_info("WebRTC controller stopped")
+        log_info("Controllers stopped")
 
         # Cleanup: close HTTP session to release resources
         if client is not None:
