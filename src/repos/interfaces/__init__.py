@@ -7,6 +7,7 @@ from .network_commander_repo_interface import NetworkCommanderRepoInterface
 from .network_interface_cache_repo_interface import NetworkInterfaceCacheRepoInterface
 from .netmon_client_repo_interface import NetmonClientRepoInterface
 from .socket_repo_interface import SocketRepoInterface
+from .debug_socket_repo_interface import DebugSocketRepoInterface
 
 __all__ = [
     "ContainerRuntimeRepoInterface",
@@ -18,4 +19,5 @@ __all__ = [
     "NetworkInterfaceCacheRepoInterface",
     "NetmonClientRepoInterface",
     "SocketRepoInterface",
+    "DebugSocketRepoInterface",
 ]

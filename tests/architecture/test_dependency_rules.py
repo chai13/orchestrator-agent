@@ -5,6 +5,8 @@ classify each import into an architectural layer, and assert that no
 forbidden cross-layer dependencies exist.
 """
 
+from __future__ import annotations
+
 import ast
 from pathlib import Path
 

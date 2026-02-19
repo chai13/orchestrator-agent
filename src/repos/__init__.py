@@ -8,6 +8,7 @@ from .interfaces import (
     NetworkInterfaceCacheRepoInterface,
     NetmonClientRepoInterface,
     SocketRepoInterface,
+    DebugSocketRepoInterface,
 )
 from .container_runtime_repo import ContainerRuntimeRepo
 from .vnic_repo import VNICRepo
@@ -17,6 +18,7 @@ from .http_client_repo import HTTPClientRepo
 from .network_interface_cache_repo import NetworkInterfaceCacheRepo
 from .netmon_client_repo import NetmonClientRepo
 from .socket_repo import SocketRepo
+from .debug_socket_repo import DebugSocketRepo
 
 __all__ = [
     # Interfaces
@@ -29,6 +31,7 @@ __all__ = [
     "NetworkInterfaceCacheRepoInterface",
     "NetmonClientRepoInterface",
     "SocketRepoInterface",
+    "DebugSocketRepoInterface",
     # Implementations
     "ContainerRuntimeRepo",
     "VNICRepo",
@@ -38,4 +41,5 @@ __all__ = [
     "NetworkInterfaceCacheRepo",
     "NetmonClientRepo",
     "SocketRepo",
+    "DebugSocketRepo",
 ]
