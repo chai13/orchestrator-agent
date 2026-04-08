@@ -242,9 +242,9 @@ if ! echo "$response" | jq empty 2>/dev/null; then
   exit 1
 fi
 
-CUSTOM_ID=$(echo "$response" | jq -r '.data.id')
-EXPIRES_AT=$(echo "$response" | jq -r '.data.expiresAt')
-EXPIRES_IN=$(echo "$response" | jq -r '.data.expiresIn')
+CUSTOM_ID=$(echo "$response" | jq -r '.payload.id')
+EXPIRES_AT=$(echo "$response" | jq -r '.payload.expiresAt')
+EXPIRES_IN=$(echo "$response" | jq -r '.payload.expiresIn')
 
 if [[ -z "$CUSTOM_ID" || "$CUSTOM_ID" == "null" ]]; then
   echo "[ERROR] Failed to retrieve ID from server."
