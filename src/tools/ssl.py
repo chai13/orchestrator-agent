@@ -18,9 +18,13 @@ def _get_ssl_context():
     if _ssl_context is None:
         _ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         _ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        _ssl_context.load_cert_chain(certfile=client_cert, keyfile=client_key)
-        _ssl_context.check_hostname = True
-        _ssl_context.verify_mode = ssl.CERT_REQUIRED
+        # _ssl_context.load_cert_chain(certfile=client_cert, keyfile=client_key)
+        # _ssl_context.check_hostname = True
+        # _ssl_context.verify_mode = ssl.CERT_REQUIRED
+        # 开发环境：完全禁用证书验证
+        _ssl_context.check_hostname = False
+        _ssl_context.verify_mode = ssl.CERT_NONE
+
     return _ssl_context
 
 
@@ -39,6 +43,7 @@ def get_ssl_session(ttl_dns_cache: int = 30):
         ssl=_get_ssl_context(),
         ttl_dns_cache=ttl_dns_cache,
         use_dns_cache=True,
+        # 开发环境：强制关闭连接，避免重用
         force_close=True,  # Don't reuse connections (helps after network change)
     )
     return ClientSession(connector=connector)
@@ -52,20 +57,22 @@ def _extract_agent_id() -> str:
     Returns:
         str: Agent ID from the certificate CN field, or "UNKNOWN" if not found
     """
-    try:
-        with open(client_cert, "rb") as cert_file:
-            cert_data = cert_file.read()
-            cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+    # 开发环境：直接返回开发环境agent ID，避免读取证书文件
+    return "dev-agent"
+    # try:
+    #     with open(client_cert, "rb") as cert_file:
+    #         cert_data = cert_file.read()
+    #         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
-            for attribute in cert.subject:
-                if attribute.oid == x509.oid.NameOID.COMMON_NAME:
-                    return attribute.value
+    #         for attribute in cert.subject:
+    #             if attribute.oid == x509.oid.NameOID.COMMON_NAME:
+    #                 return attribute.value
 
-        log_error(f"Agent ID not found in certificate CN field: {client_cert}")
-        return "UNKNOWN"
-    except Exception as e:
-        log_error(f"Failed to extract agent_id from {client_cert}: {e}")
-        return "UNKNOWN"
+    #     log_error(f"Agent ID not found in certificate CN field: {client_cert}")
+    #     return "UNKNOWN"
+    # except Exception as e:
+    #     log_error(f"Failed to extract agent_id from {client_cert}: {e}")
+    #     return "UNKNOWN"
 
 
 def get_agent_id() -> str:

@@ -55,20 +55,34 @@ async def get_client(dns_ttl: int = 30):
 
     # Create fresh HTTP session with short DNS TTL
     # This helps recover from network changes by not caching stale DNS
-    http_session = get_ssl_session(ttl_dns_cache=dns_ttl)
 
+    # 生产环境：使用mTLS会话
+    # http_session = get_ssl_session(ttl_dns_cache=dns_ttl)
+
+    # client = socketio.AsyncClient(
+    #     reconnection=True,
+    #     reconnection_attempts=0,
+    #     reconnection_delay=1,
+    #     reconnection_delay_max=5,
+    #     http_session=http_session,
+    #     logger=True,
+    #     engineio_logger=True,
+    # )
+
+
+    # 创建开发环境的 HTTP 会话（禁用 SSL 验证）
+    http_session = get_ssl_session(dns_ttl)
+    # 创建 Socket.IO 客户端，禁用 SSL 验证
     client = socketio.AsyncClient(
-        reconnection=True,
-        reconnection_attempts=0,
-        reconnection_delay=1,
-        reconnection_delay_max=5,
         http_session=http_session,
-        logger=True,
-        engineio_logger=True,
+        ssl_verify=False,  # 禁用 SSL 验证
+        logger=False,
+        engineio_logger=False
     )
 
     @client.event
     async def connect_error(data):
         log_error(f"Socket.IO connection error: {data}")
 
+    log_info("开发模式: WebSocket 客户端已创建（SSL 验证禁用）")
     return client
