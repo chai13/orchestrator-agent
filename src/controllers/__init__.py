@@ -62,7 +62,7 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         await ctx.debug_session_manager.start()
 
         await client.connect(
-            f"https://{server_url}",
+            f"http://{server_url}",
         )
         log_info(f"Connected to WebSocket server at {server_url}")
         await client.wait()
