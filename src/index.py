@@ -5,7 +5,7 @@ import argparse
 import asyncio
 
 ## AWS Server Address
-SERVER_HOST = "api.autonomylogic.com:3001"
+SERVER_HOST = "192.168.63.128:3003"
 
 
 if __name__ == "__main__":

@@ -25,8 +25,8 @@ CONTAINER_NAME="orchestrator_agent"
 NETMON_CONTAINER_NAME="autonomy_netmon"
 SOURCE_DIR="/tmp/orchestrator-agent"
 SHARED_VOLUME="orchestrator-shared"
-SERVER_DNS="api.autonomylogic.com"
-SERVER_URL="https://$SERVER_DNS"
+SERVER_DNS="192.168.63.128:3001"
+SERVER_URL="http://$SERVER_DNS"
 GET_ID_URL="$SERVER_URL/orchestrators/id"
 ENROLL_URL="$SERVER_URL/orchestrators/enroll"
 MTLS_DIR="$HOME/.mtls"
@@ -278,10 +278,10 @@ req_extensions = v3_req
 prompt = no
 
 [req_distinguished_name]
-C=BR
-ST=SP
-L=SaoPaulo
-O=AutonomyLogic
+C=CN
+ST=BJ
+L=BJ
+O=kblockcloud
 OU=Production
 CN=${CUSTOM_ID}
 
