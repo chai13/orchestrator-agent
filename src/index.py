@@ -5,7 +5,7 @@ import argparse
 import asyncio
 
 ## AWS Server Address
-SERVER_HOST = "192.168.63.128:3003"
+SERVER_HOST = "www.kblockcloud.com"
 
 
 if __name__ == "__main__":
