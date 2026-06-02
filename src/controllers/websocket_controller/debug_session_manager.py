@@ -80,7 +80,7 @@ class DebugSessionManager:
                 return self._handle_start(device_id, debug_message)
             elif msg_type == "debug_stop":
                 return self._handle_stop(device_id)
-            elif msg_type in ("debug_get_md5", "debug_get_list", "debug_set", "debug_info"):
+            elif msg_type in ("debug_get_md5", "debug_get_list", "debug_set", "debug_info", "debug_command"):
                 return self._handle_command(device_id, debug_message)
             else:
                 return {"type": "debug_error", "error": f"Unknown debug message type: {msg_type}"}
