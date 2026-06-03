@@ -52,6 +52,10 @@ def run_debug_command(command_type, params, debug_socket, debug_protocol=None):
             except (ValueError, AttributeError) as e:
                 return {"success": False, "error": f"Invalid value hex string: {value_hex!r} ({e})"}
             hex_cmd = build_set_variable(index, force, value_bytes)
+        elif command_type == "debug_command":
+            hex_cmd = params.get("command", "")
+            if not hex_cmd:
+                return {"success": False, "error": "command must not be empty"}
         else:
             return {"success": False, "error": f"Unknown command type: {command_type}"}
 

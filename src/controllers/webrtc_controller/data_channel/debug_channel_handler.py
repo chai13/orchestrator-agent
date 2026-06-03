@@ -143,6 +143,7 @@ class DebugChannelHandler:
         username = message.get("username", "dev")
         password = message.get("password", "dev")
         port = message.get("port", 8443)
+        direct_token = message.get("token")  # 新版 runtime 可直接传 token
 
         log_info(f"Debug session requested for device {device_id}")
 
@@ -159,9 +160,13 @@ class DebugChannelHandler:
         log_info(f"Starting persistent debug session for {device_id} at {device_ip}:{port}")
 
         try:
-            # Step 1: Authenticate
-            http_client = self._http_client_factory()
-            auth_response = await asyncio.to_thread(
+            # Step 1: Authenticate — 有 token 直接使用，否则 username/password 登录
+            if direct_token:
+                token = direct_token
+                log_info("Debug session: using provided token")
+            else:
+                http_client = self._http_client_factory()
+                auth_response = await asyncio.to_thread(
                 http_client.make_request,
                 "POST",
                 device_ip,
@@ -228,6 +233,46 @@ class DebugChannelHandler:
             return
 
         msg_type = message.get("type")
+
+        # debug_command: 直接透传原始 hex 命令（新版 runtime v4 协议）
+        if msg_type == "debug_command":
+            command_hex = message.get("command") or message.get("8443command", "")
+            if not command_hex:
+                self._send_message({
+                    "type": "debug_error",
+                    "error": "8443command is empty",
+                })
+                return
+
+            params = {"command": command_hex}
+            try:
+                result = await asyncio.to_thread(
+                    run_debug_command,
+                    "debug_command",
+                    params,
+                    self._debug_socket,
+                )
+
+                if result.get("success"):
+                    data = result.get("data", {})
+                    sname = data.get("status_name", "")
+                    if sname and sname != "SUCCESS":
+                        self._send_message({"type": "debug_error", "error": sname})
+                    else:
+                        self._send_message({
+                            "type": "debug_command_response",
+                            "success": True,
+                            "data": result.get("raw", ""),
+                        })
+                else:
+                    self._send_message({
+                        "type": "debug_error",
+                        "error": result.get("error", "Unknown error"),
+                    })
+            except Exception as e:
+                log_error(f"Debug command {msg_type} failed: {e}")
+                self._send_message({"type": "debug_error", "error": str(e)})
+            return
 
         # Map message type to command_type for run_debug_command
         command_map = {

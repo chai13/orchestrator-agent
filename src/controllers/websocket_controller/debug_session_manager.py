@@ -102,6 +102,7 @@ class DebugSessionManager:
         username = message.get("username", "dev")
         password = message.get("password", "dev")
         port = message.get("port", 8443)
+        direct_token = message.get("token")  # 新版 runtime 可直接传 token
 
         log_info(f"HTTP debug session requested for device {device_id}")
 
@@ -113,28 +114,32 @@ class DebugSessionManager:
         device_ip = client["ip"]
         log_info(f"Starting HTTP debug session for {device_id} at {device_ip}:{port}")
 
-        # Step 1: Authenticate
-        http_client = self._http_client_factory()
-        auth_response = http_client.make_request(
-            "POST",
-            device_ip,
-            port,
-            "api/login",
-            {"json": {"username": username, "password": password}},
-        )
+        # Step 1: Authenticate — 有 token 直接使用，否则 username/password 登录
+        if direct_token:
+            token = direct_token
+            log_info("HTTP debug session: using provided token")
+        else:
+            http_client = self._http_client_factory()
+            auth_response = http_client.make_request(
+                "POST",
+                device_ip,
+                port,
+                "api/login",
+                {"json": {"username": username, "password": password}},
+            )
 
-        if not auth_response.get("ok"):
-            return {
-                "type": "debug_error",
-                "error": f"Authentication failed: HTTP {auth_response.get('status_code')}",
-            }
+            if not auth_response.get("ok"):
+                return {
+                    "type": "debug_error",
+                    "error": f"Authentication failed: HTTP {auth_response.get('status_code')}",
+                }
 
-        body = auth_response.get("body", {})
-        token = body.get("access_token") if isinstance(body, dict) else None
-        if not token:
-            return {"type": "debug_error", "error": "No access_token in login response"}
+            body = auth_response.get("body", {})
+            token = body.get("access_token") if isinstance(body, dict) else None
+            if not token:
+                return {"type": "debug_error", "error": "No access_token in login response"}
 
-        log_info("HTTP debug session: authentication successful")
+            log_info("HTTP debug session: authentication successful")
 
         # Step 2: Connect Socket.IO
         url = f"https://{device_ip}:{port}"
@@ -168,6 +173,23 @@ class DebugSessionManager:
     def _execute_command(self, debug_socket, message):
         """Execute a debug command under the per-device lock."""
         msg_type = message.get("type")
+
+        # debug_command: 直接透传原始 hex 命令（新版 runtime v4 协议）
+        if msg_type == "debug_command":
+            command_hex = message.get("command")
+            if not command_hex:
+                return {"type": "debug_error", "error": "command is empty"}
+            params = {"command": command_hex}
+            result = run_debug_command("debug_command", params, debug_socket)
+
+            if result.get("success"):
+                data = result.get("data", {})
+                sname = data.get("status_name", "")
+                if sname and sname != "SUCCESS":
+                    return {"type": "debug_error", "error": sname}
+                return {"type": "debug_command_response", "success": True, "data": result.get("raw", "")}
+            else:
+                return {"type": "debug_error", "error": result.get("error", "Unknown error")}
 
         command_map = {
             "debug_get_md5": "get_md5",
