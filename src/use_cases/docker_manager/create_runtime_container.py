@@ -358,6 +358,55 @@ def _connect_orchestrator(internal_network, *, container_runtime, socket_repo):
         log_warning(f"Error connecting orchestrator-agent to internal network: {e}")
 
 
+async def reconnect_existing_internal_networks(*, ctx):
+    """Reconnect agent to all existing runtime containers' internal networks.
+
+    Called at startup after agent container is recreated. The new agent
+    container is not automatically attached to existing internal Docker
+    networks, and without this reconnection it cannot reach runtimes
+    via their internal IPs.
+    """
+    clients = ctx.client_registry.list_clients()
+    if not clients:
+        log_debug("No existing clients found, skipping internal network reconnection")
+        return
+
+    log_info(f"Reconnecting to internal networks for {len(clients)} existing runtime(s)...")
+    main_container = get_self_container(
+        container_runtime=ctx.container_runtime,
+        socket_repo=ctx.socket_repo,
+    )
+    if not main_container:
+        log_warning("Could not detect self container, skipping internal network reconnection")
+        return
+
+    for device_id in clients:
+        try:
+            container = ctx.container_runtime.get_container(device_id)
+            container.reload()
+            if container.status != "running":
+                log_debug(f"Container {device_id} is not running, skipping network reconnect")
+                continue
+        except ctx.container_runtime.NotFoundError:
+            log_debug(f"Container {device_id} not found, skipping network reconnect")
+            continue
+
+        network_name = f"{device_id}_internal"
+        try:
+            network = ctx.container_runtime.get_network(network_name)
+            network.connect(main_container)
+            log_info(f"Reconnected to internal network {network_name}")
+        except ctx.container_runtime.APIError as e:
+            if "already exists" in str(e).lower() or "already attached" in str(e).lower():
+                log_debug(f"Already connected to internal network {network_name}")
+            else:
+                log_warning(f"Failed to reconnect to {network_name}: {e}")
+        except ctx.container_runtime.NotFoundError:
+            log_debug(f"Internal network {network_name} not found, skipping")
+
+    log_info("Internal network reconnection completed")
+
+
 def _collect_network_info(container, container_name, internal_network, macvlan_networks, *, client_registry):
     """Reload container, extract IPs, register client.
 

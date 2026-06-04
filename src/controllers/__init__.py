@@ -16,6 +16,7 @@ from tools.dns_utils import (
     is_dns_error,
 )
 from time import sleep
+from use_cases.docker_manager.create_runtime_container import reconnect_existing_internal_networks
 
 
 async def main_websocket_task(server_url: str, dns_ttl: int = 30):
@@ -53,6 +54,11 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         # Start network event listener
         await ctx.network_event_listener.start()
         log_info("Network event listener started")
+
+        # Reconnect to existing runtime containers' internal networks
+        # This is needed after agent container restart, since the new
+        # container is not automatically attached to existing networks.
+        await reconnect_existing_internal_networks(ctx=ctx)
 
         # Start WebRTC session manager background tasks
         await start_webrtc_controller(session_manager)
