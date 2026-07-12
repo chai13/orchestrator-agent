@@ -111,7 +111,7 @@ class DebugSessionManager:
         if not client:
             return {"type": "debug_error", "error": f"Device {device_id} not found"}
 
-        device_ip = client["ip"]
+        device_ip = client.get("name", device_id)
         log_info(f"Starting HTTP debug session for {device_id} at {device_ip}:{port}")
 
         # Step 1: Authenticate — 有 token 直接使用，否则 username/password 登录

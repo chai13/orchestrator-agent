@@ -359,25 +359,24 @@ def _connect_orchestrator(internal_network, *, container_runtime, socket_repo):
 
 
 async def reconnect_existing_internal_networks(*, ctx):
-    """Reconnect agent to all existing runtime containers' internal networks.
+    """重新将 agent 连接到所有已有 runtime 容器的内部网络。
 
-    Called at startup after agent container is recreated. The new agent
-    container is not automatically attached to existing internal Docker
-    networks, and without this reconnection it cannot reach runtimes
-    via their internal IPs.
+    agent 容器重启后调用。新 agent 容器不会自动挂载到已有的内部
+    Docker 网络，不重连的话就无法通过内部 IP 访问 runtime。
+    重连后更新 runtime IP，因为 Docker IP 分配可能在重启后变化。
     """
     clients = ctx.client_registry.list_clients()
     if not clients:
-        log_debug("No existing clients found, skipping internal network reconnection")
+        log_debug("没有已注册的客户端，跳过内部网络重连")
         return
 
-    log_info(f"Reconnecting to internal networks for {len(clients)} existing runtime(s)...")
+    log_info(f"正在重连 {len(clients)} 个已有 runtime 的内部网络...")
     main_container = get_self_container(
         container_runtime=ctx.container_runtime,
         socket_repo=ctx.socket_repo,
     )
     if not main_container:
-        log_warning("Could not detect self container, skipping internal network reconnection")
+        log_warning("无法检测到 agent 自身容器，跳过内部网络重连")
         return
 
     for device_id in clients:
@@ -385,26 +384,44 @@ async def reconnect_existing_internal_networks(*, ctx):
             container = ctx.container_runtime.get_container(device_id)
             container.reload()
             if container.status != "running":
-                log_debug(f"Container {device_id} is not running, skipping network reconnect")
+                log_debug(f"容器 {device_id} 未在运行，跳过网络重连")
                 continue
         except ctx.container_runtime.NotFoundError:
-            log_debug(f"Container {device_id} not found, skipping network reconnect")
+            log_debug(f"容器 {device_id} 不存在，跳过网络重连")
             continue
 
         network_name = f"{device_id}_internal"
         try:
             network = ctx.container_runtime.get_network(network_name)
             network.connect(main_container)
-            log_info(f"Reconnected to internal network {network_name}")
+            log_info(f"已重连到内部网络 {network_name}")
         except ctx.container_runtime.APIError as e:
             if "already exists" in str(e).lower() or "already attached" in str(e).lower():
-                log_debug(f"Already connected to internal network {network_name}")
+                log_debug(f"已连接到内部网络 {network_name}")
             else:
-                log_warning(f"Failed to reconnect to {network_name}: {e}")
+                log_warning(f"重连内部网络 {network_name} 失败: {e}")
         except ctx.container_runtime.NotFoundError:
-            log_debug(f"Internal network {network_name} not found, skipping")
+            log_debug(f"内部网络 {network_name} 不存在，跳过")
+            continue
 
-    log_info("Internal network reconnection completed")
+        # 重连后更新 runtime 的实际 IP — Docker IP 分配可能已经变化
+        try:
+            container.reload()
+            network_settings = container.attrs["NetworkSettings"]["Networks"]
+            if network_name in network_settings:
+                ip_addr = network_settings[network_name]["IPAddress"]
+                old_ip = ctx.client_registry.get_client(device_id).get("ip")
+                if old_ip != ip_addr:
+                    ctx.client_registry.add_client(device_id, ip_addr)
+                    log_info(f"更新 {device_id} IP: {old_ip} → {ip_addr}")
+                else:
+                    log_debug(f"{device_id} IP 未变化: {ip_addr}")
+            else:
+                log_warning(f"容器 {device_id} 不在内部网络 {network_name}，无法更新 IP")
+        except Exception as e:
+            log_warning(f"更新 {device_id} IP 失败: {e}")
+
+    log_info("内部网络重连完成")
 
 
 def _collect_network_info(container, container_name, internal_network, macvlan_networks, *, client_registry):

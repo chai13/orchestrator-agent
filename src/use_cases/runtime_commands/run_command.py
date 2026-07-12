@@ -92,6 +92,11 @@ def execute_for_device(device_id, message, *, client_registry, http_client):
     if not instance:
         return {"status": "error", "error": f"Device not found: {device_id}"}
 
+    # Use container name as hostname so Docker embedded DNS resolves it
+    # to the correct internal IP, avoiding stale IPs after Docker restarts.
+    instance = dict(instance)
+    instance["ip"] = instance.get("name", device_id)
+
     command = {
         "method": message.get("method"),
         "api": message.get("api"),

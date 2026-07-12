@@ -55,9 +55,8 @@ async def main_websocket_task(server_url: str, dns_ttl: int = 30):
         await ctx.network_event_listener.start()
         log_info("Network event listener started")
 
-        # Reconnect to existing runtime containers' internal networks
-        # This is needed after agent container restart, since the new
-        # container is not automatically attached to existing networks.
+        # 重连到已有 runtime 容器的内部网络
+        # agent 容器重启后，新容器不会自动挂载到已有网络
         await reconnect_existing_internal_networks(ctx=ctx)
 
         # Start WebRTC session manager background tasks

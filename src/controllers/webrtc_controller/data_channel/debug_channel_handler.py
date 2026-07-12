@@ -156,7 +156,7 @@ class DebugChannelHandler:
             })
             return
 
-        device_ip = client["ip"]
+        device_ip = client.get("name", device_id)
         log_info(f"Starting persistent debug session for {device_id} at {device_ip}:{port}")
 
         try:
