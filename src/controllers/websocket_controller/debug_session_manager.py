@@ -120,26 +120,29 @@ class DebugSessionManager:
             log_info("HTTP debug session: using provided token")
         else:
             http_client = self._http_client_factory()
-            auth_response = http_client.make_request(
-                "POST",
-                device_ip,
-                port,
-                "api/login",
-                {"json": {"username": username, "password": password}},
-            )
+            try:
+                auth_response = http_client.make_request(
+                    "POST",
+                    device_ip,
+                    port,
+                    "api/login",
+                    {"json": {"username": username, "password": password}},
+                )
 
-            if not auth_response.get("ok"):
-                return {
-                    "type": "debug_error",
-                    "error": f"Authentication failed: HTTP {auth_response.get('status_code')}",
-                }
+                if not auth_response.get("ok"):
+                    return {
+                        "type": "debug_error",
+                        "error": f"Authentication failed: HTTP {auth_response.get('status_code')}",
+                    }
 
-            body = auth_response.get("body", {})
-            token = body.get("access_token") if isinstance(body, dict) else None
-            if not token:
-                return {"type": "debug_error", "error": "No access_token in login response"}
+                body = auth_response.get("body", {})
+                token = body.get("access_token") if isinstance(body, dict) else None
+                if not token:
+                    return {"type": "debug_error", "error": "No access_token in login response"}
 
-            log_info("HTTP debug session: authentication successful")
+                log_info("HTTP debug session: authentication successful")
+            finally:
+                http_client.close()
 
         # Step 2: Connect Socket.IO
         url = f"https://{device_ip}:{port}"
