@@ -17,7 +17,8 @@ COPY requirements.txt .
 FROM python:3.11-slim AS shim-builder
 WORKDIR /shim
 COPY av-shim/ .
-RUN pip wheel --no-deps --wheel-dir /shim-wheels .
+RUN pip wheel --no-deps --wheel-dir /shim-wheels \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple .
 
 # ---------------------------
 # Build all dependency wheels
@@ -37,10 +38,13 @@ COPY --from=shim-builder /shim-wheels /shim-wheels
 
 RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       pip wheel --no-cache-dir --wheel-dir /wheels \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
         --find-links /shim-wheels --only-binary av \
         -r requirements.txt; \
     else \
-      pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt; \
+      pip wheel --no-cache-dir --wheel-dir /wheels \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        -r requirements.txt; \
     fi
 
 # ---------------------------
