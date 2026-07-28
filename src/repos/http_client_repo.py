@@ -13,6 +13,8 @@ class HTTPClientRepo(HTTPClientRepoInterface):
     def __init__(self):
         self._session = Session()
         self._session.verify = False
+        self._default_timeout = 30.0
+        self._max_retries = 1
 
     def make_request(
         self, method: str, ip: str, port: int, api: str, content: dict
@@ -23,15 +25,18 @@ class HTTPClientRepo(HTTPClientRepoInterface):
 
         log_info(f"Making {method} request to {url}")
 
+        request_kwargs = dict(content)
+        request_kwargs.setdefault("timeout", self._default_timeout)
+
         try:
             if method == "GET":
-                response = self._session.get(url, **content)
+                response = self._session.get(url, **request_kwargs)
             elif method == "POST":
-                response = self._session.post(url, **content)
+                response = self._session.post(url, **request_kwargs)
             elif method == "DELETE":
-                response = self._session.delete(url, **content)
+                response = self._session.delete(url, **request_kwargs)
             elif method == "PUT":
-                response = self._session.put(url, **content)
+                response = self._session.put(url, **request_kwargs)
             else:
                 log_error(f"Unsupported HTTP method: {method}")
                 return {

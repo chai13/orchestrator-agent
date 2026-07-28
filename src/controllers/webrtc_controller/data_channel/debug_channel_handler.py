@@ -166,32 +166,35 @@ class DebugChannelHandler:
                 log_info("Debug session: using provided token")
             else:
                 http_client = self._http_client_factory()
-                auth_response = await asyncio.to_thread(
-                http_client.make_request,
-                "POST",
-                device_ip,
-                port,
-                "api/login",
-                {"json": {"username": username, "password": password}},
-            )
+                try:
+                    auth_response = await asyncio.to_thread(
+                        http_client.make_request,
+                        "POST",
+                        device_ip,
+                        port,
+                        "api/login",
+                        {"json": {"username": username, "password": password}},
+                    )
 
-            if not auth_response.get("ok"):
-                self._send_message({
-                    "type": "debug_error",
-                    "error": f"Authentication failed: HTTP {auth_response.get('status_code')}",
-                })
-                return
+                    if not auth_response.get("ok"):
+                        self._send_message({
+                            "type": "debug_error",
+                            "error": f"Authentication failed: HTTP {auth_response.get('status_code')}",
+                        })
+                        return
 
-            body = auth_response.get("body", {})
-            token = body.get("access_token") if isinstance(body, dict) else None
-            if not token:
-                self._send_message({
-                    "type": "debug_error",
-                    "error": "No access_token in login response",
-                })
-                return
+                    body = auth_response.get("body", {})
+                    token = body.get("access_token") if isinstance(body, dict) else None
+                    if not token:
+                        self._send_message({
+                            "type": "debug_error",
+                            "error": "No access_token in login response",
+                        })
+                        return
 
-            log_info("Debug session: authentication successful")
+                    log_info("Debug session: authentication successful")
+                finally:
+                    http_client.close()
 
             # Step 2: Connect Socket.IO
             url = f"https://{device_ip}:{port}"
