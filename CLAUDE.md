@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Orchestrator Agent is a Python daemon that runs on edge devices as a Docker container. It maintains a persistent WebSocket connection (via Socket.IO) to the Autonomy Edge Cloud using mTLS authentication and orchestrates OpenPLC v4 runtime containers (vPLCs) on the host machine.
+Orchestrator Agent is a Python daemon that runs on edge devices as a Docker container. It maintains a persistent WebSocket connection (via Socket.IO) to the Kblock Cloud using mTLS authentication and orchestrates OpenPLC v4 runtime containers (vPLCs) on the host machine.
 
 ## Development Commands
 

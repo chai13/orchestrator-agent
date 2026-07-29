@@ -73,6 +73,7 @@ class DebugSocketRepo(DebugSocketRepoInterface):
                 url,
                 namespaces=[NAMESPACE],
                 auth={"token": token},
+                wait_timeout=timeout,
             )
         except Exception:
             self._safe_disconnect()
